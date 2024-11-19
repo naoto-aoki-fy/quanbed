@@ -18,12 +18,14 @@ cp "${ORIGINAL_CODE_FN}" "${CODE_FN}"
 
 JOB_FN="job_${BASHPID}.sh"
 
+OUTPUT_FN="output_${BASHPID}"
+
 cat <<EOF > "${JOB_FN}"
 #!/bin/bash
 #SBATCH --job-name=job
 #SBATCH --partition="${JOB_PARTITION}"
-#SBATCH --output=output_${BASHPID}.out
-#SBATCH --error=output_${BASHPID}.err
+#SBATCH --output="${OUTPUT_FN}.out"
+#SBATCH --error="${OUTPUT_FN}.err"
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1

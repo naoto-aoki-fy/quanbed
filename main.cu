@@ -16,10 +16,10 @@
 template<typename INT, int arg> class log2_compile_time { public: static INT const value = 1 + log2_compile_time<INT, arg/2>::value; };
 template<typename INT> class log2_compile_time<INT, 1> { public: static INT const value = 0; };
 
-int const gpu_list[] = {0, 1, 2, 3, 4, 5, 6, 7};
+// int const gpu_list[] = {0, 1, 2, 3, 4, 5, 6, 7};
 // int const gpu_list[] = {0, 1, 2, 3};
 // int const gpu_list[] = {0};
-// int const gpu_list[] = {0, 0};
+int const gpu_list[] = {0, 0};
 // int const gpu_list[] = {0, 0, 0, 0};
 // int const gpu_list[] = {0, 0, 0, 0, 0, 0, 0, 0};
 // int const gpu_list[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -135,17 +135,17 @@ public:
     }
 };
 
-template<class Gate, int num_split_areas>
+template<template<int> class Gate, int num_split_areas>
 __global__ void gpu_gate(int64_t split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t* const state_data[num_split_areas]) {
     int const log_num_split_areas = log2_compile_time<int, num_split_areas>::value;
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
     int64_t const num_threads_local = ((int64_t)1) << (num_qubits_local-1);
 
     int64_t const thread_num = threadIdx.x + blockIdx.x * blockDim.x + num_threads_local * split_num;
-    Gate::apply(thread_num, num_qubits, target_qubit_num, state_data);
+    Gate<num_split_areas>::apply(thread_num, num_qubits, target_qubit_num, state_data);
 }
 
-template<class Gate, int num_split_areas>
+template<template<int> class Gate, int num_split_areas>
 void cpu_gate(int64_t const num_qubits, int64_t const target_qubit_num, my_float_t* const state_data[num_split_areas]) {
     
     // my_float_t* state_data_array[1];
@@ -154,7 +154,7 @@ void cpu_gate(int64_t const num_qubits, int64_t const target_qubit_num, my_float
     int64_t const num_threads = ((int64_t)1) << ((int64_t)(num_qubits-1));
     // #pragma omp parallel for 
     for(int64_t thread_num = 0; thread_num < num_threads; thread_num++) {
-        Gate::apply(thread_num, num_qubits, target_qubit_num, state_data);
+        Gate<num_split_areas>::apply(thread_num, num_qubits, target_qubit_num, state_data);
     }
 }
 
@@ -255,8 +255,9 @@ int main() {
         int const gpu_i = gpu_list[i]; 
         CHECK_CUDA(cudaSetDevice, gpu_i);
 
-        gpu_gate<hadamard<num_gpus>, num_gpus><<<num_blocks, block_size, 0, stream>>>(i, num_qubits, target_qubit_num, state_data_device_list);
+        // gpu_gate<hadamard<num_gpus>, num_gpus><<<num_blocks, block_size, 0, stream>>>(i, num_qubits, target_qubit_num, state_data_device_list);
         // gpu_gate<hadamard_impl><<<1, 1, 0, stream>>>(i, num_qubits, 3, state_data_device_list);
+        gpu_gate<hadamard, num_gpus><<<num_blocks, block_size, 0, stream>>>(i, num_qubits, target_qubit_num, state_data_device_list);
 
     }
 
@@ -273,7 +274,8 @@ int main() {
     }
 
     fprintf(stderr, "[info] cpu_hadamard\n");
-    cpu_gate<hadamard<1>, 1>(num_qubits, target_qubit_num, &state_data_host_2);
+    // cpu_gate<hadamard<1>, 1>(num_qubits, target_qubit_num, &state_data_host_2);
+    cpu_gate<hadamard, 1>(num_qubits, target_qubit_num, &state_data_host_2);
 
     if (cudaSuccess != cudaStreamQuery(stream)) {
         fprintf(stderr, "[info] wait for GPU job completion...\n");
@@ -312,10 +314,10 @@ int main() {
     }
     fprintf(stderr, "[info] max_rel_diff=%.16e\n", max_rel_diff);
 
-    for(int i=0; i<num_states; i++) {
-        fprintf(stdout, "%lld,%.16e,%.16e\n", i, state_data_host[i], state_data_host_2[i]);
-        // fprintf(stdout, "%lld,%.16e\n", i, state_data_host[i]);
-    }
+    // for(int i=0; i<num_states; i++) {
+    //     fprintf(stdout, "%lld,%.16e,%.16e\n", i, state_data_host[i], state_data_host_2[i]);
+    //     // fprintf(stdout, "%lld,%.16e\n", i, state_data_host[i]);
+    // }
 
     return 0;
 }
