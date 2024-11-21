@@ -1,18 +1,24 @@
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <cmath>
 #include <stdint.h>
+
 #include <stdexcept>
 #include <string>
-#include <iostream>
+// #include <iostream>
 #include <sstream>
-#include <string.h>
 #include <algorithm>
-#include <cmath>
 #include <chrono>
 #include <random>
 
+#include <numaif.h>
+#include <sys/mman.h>
 #include <omp.h>
 #include <cuda_runtime.h>
+#include <numa.h>
+#include <sched.h>
+
 
 #define ARRAY_SIZE(array) (sizeof(array)/sizeof(*array))
 
@@ -28,6 +34,7 @@ int const gpu_list[] = {0, 1, 2, 3};
 // int const gpu_list[] = {0, 0, 0, 0, 0, 0, 0, 0};
 // int const gpu_list[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+bool const do_num_sort = false;
 // int const num_gpus = 1 << log_num_gpus;
 int const num_gpus = ARRAY_SIZE(gpu_list);
 int const log_num_gpus = log2_compile_time<int, num_gpus>::value;
@@ -184,6 +191,8 @@ int main() {
     fprintf(stderr, "[info] log_block_size=%d\n", log_block_size);
 
     fprintf(stderr, "[info] num_omp_threads=%d\n", num_omp_threads);
+
+    fprintf(stderr, "[info] do_numa_sort=%d\n", do_num_sort);
 
     // int const dev_list[] = {0, 1, 2, 3};
     // int const num_gpus = ARRAY_SIZE(dev_list);
@@ -410,6 +419,10 @@ int main() {
 
     omp_set_num_threads(num_omp_threads);
 
+    std::vector<int> numa_node_list(num_omp_threads);
+    std::vector<int> thread_num_sort(num_omp_threads);
+    std::vector<int> thread_index_list(num_omp_threads);
+
     #pragma omp parallel
     {
         // int const num_omp_threads_runtime = omp_get_num_threads();
@@ -419,15 +432,85 @@ int main() {
         // }
 
         int const omp_thread_num = omp_get_thread_num();
+
+        /* ---- begin of NUMA sort ---- */
+
+        if (numa_available() < 0) {
+            fprintf(stderr, "[error] NUMA is not available on this system.\n");
+            // return 1;
+        }
+
+        // 現在のスレッドがバインドされているノードの取得
+        int current_node = numa_node_of_cpu(sched_getcpu());
+        if (current_node == -1) {
+            fprintf(stderr, "[error] %d Failed to get the current CPU's NUMA node.\n", omp_thread_num);
+            // return 1;
+        }
+
+        numa_node_list[omp_thread_num] = current_node;
+
+        #pragma omp barrier
+
+        #pragma omp single
+        {
+            for (int i = 0; i < num_omp_threads; ++i) {
+                thread_num_sort[i] = i;
+            }
+
+            // ソート：元の配列の値を基にインデックスをソート
+            if(do_num_sort) {
+                std::sort(thread_num_sort.begin(), thread_num_sort.end(), [&numa_node_list](auto i1, auto i2) { return numa_node_list[i1] < numa_node_list[i2]; /* 昇順 */ });
+            }
+            
+            for (int thread_index_for = 0; thread_index_for < num_omp_threads; ++thread_index_for) {
+                int const thread_num_for = thread_num_sort[thread_index_for];
+                thread_index_list[thread_num_for] = thread_index_for;
+            }           
+
+            // for (int i = 0; i < thread_num_sort.size(); ++i) {
+            //     fprintf(stderr, "[info] thread_num=%d thread_index=%d numa_node=%d\n", thread_num_sort[i], i, numa_node_list[thread_num_sort[i]]);
+            // }
+
+        }
+
+        #pragma omp barrier
+
+        // for (int thread_index_for = 0; thread_index_for < num_omp_threads; ++thread_index_for) {
+        // auto begin = state_data_host_2 + thread_index_for * num_states_local_omp;
+        // auto end = state_data_host_2 + (thread_index_for+1) * num_states_local_omp;
+        int const thread_index = thread_index_list[omp_thread_num];
+        // int const numa_node = numa_node_list[thread_num_sort[thread_index]];
+
+        // unsigned long nodemask = 1UL << numa_node;
+
+        // auto split_address = state_data_host_2 + thread_index * num_states_local_omp;
+        // if (mbind(split_address, num_states_local_omp * sizeof(my_float_t), MPOL_BIND, &nodemask, sizeof(nodemask) * 8, 0) != 0) {
+        //     fprintf(stderr, "[error] mbind for thread_index %d failed\n", thread_index);
+        //     // free(ptr);
+        //     // return 1;
+        // }
+
+        my_float_t* state_data_host_2_split_i;
+        if(do_num_sort) {
+            state_data_host_2_split_i = (my_float_t*)numa_alloc_onnode(num_states_local_omp * sizeof(*state_data_host_2_split_i), current_node);
+        } else {
+            state_data_host_2_split_i = (my_float_t*)malloc(num_states_local_omp * sizeof(*state_data_host_2_split_i));
+        }
+
+        state_data_host_2_split[thread_index] = state_data_host_2_split_i;
+        // }
+
+        /* ---- end of NUMA sort ---- */
+
         // if (omp_thread_num==0) {
         // my_float_t* state_data_host_2_split[num_gpus];
         // for(int i=0; i<num_gpus; i++) {
-        state_data_host_2_split[omp_thread_num] = (my_float_t*)malloc(num_states_local_omp * sizeof(state_data_host_2_split[0][0]));
+        // state_data_host_2_split[omp_thread_num] = (my_float_t*)malloc(num_states_local_omp * sizeof(state_data_host_2_split[0][0]));
         // state_data_host_2_split[i] = &state_data_host_2[i * num_states_local];
         // }
         //}
 
-        memcpy(state_data_host_2_split[omp_thread_num], state_data_host_2 + num_states_local_omp * omp_thread_num, num_states_local_omp * sizeof(*state_data_host_2));
+        memcpy(state_data_host_2_split[thread_index], state_data_host_2 + num_states_local_omp * thread_index, num_states_local_omp * sizeof(*state_data_host_2));
 
         #pragma omp barrier
 
@@ -437,7 +520,9 @@ int main() {
 
         // for(int i=0; i<num_gpus; i++) {
         // state_data_host_2_split[i] = &state_data_host_2[i * num_states_local];
-        cpu_gate<hadamard, num_omp_threads>(omp_thread_num, num_qubits, target_qubit_num, state_data_host_2_split);
+        // int thread_index = thread_index_list[omp_thread_num];
+        cpu_gate<hadamard, num_omp_threads>(thread_index, num_qubits, target_qubit_num, state_data_host_2_split);
+        // cpu_gate<hadamard, num_omp_threads>(omp_thread_num, num_qubits, target_qubit_num, state_data_host_2_split);
         //}
 
         // auto end = std::chrono::high_resolution_clock::now();
@@ -445,7 +530,7 @@ int main() {
 
         #pragma omp barrier
 
-        memcpy(state_data_host_2 + num_states_local_omp * omp_thread_num, state_data_host_2_split[omp_thread_num], num_states_local_omp * sizeof(*state_data_host_2));
+        memcpy(state_data_host_2 + num_states_local_omp * thread_index, state_data_host_2_split[thread_index], num_states_local_omp * sizeof(*state_data_host_2));
 
     }
 
