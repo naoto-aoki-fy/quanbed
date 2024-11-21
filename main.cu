@@ -189,9 +189,9 @@ int main() {
     // int const num_gpus = ARRAY_SIZE(dev_list);
     // int const log_num_gpus = log2(num_gpus);
 
-    std::vector<cudaStream_t> stream(num_gpus);
-    std::vector<cudaEvent_t> event_1(num_gpus);
-    std::vector<cudaEvent_t> event_2(num_gpus);
+    cudaStream_t stream[num_gpus];
+    cudaEvent_t event_1[num_gpus];
+    cudaEvent_t event_2[num_gpus];
 
     for(int i=0; i<num_gpus; i++) {
         int const gpu_i = gpu_list[i]; 
@@ -237,7 +237,7 @@ int main() {
 
     fprintf(stderr, "[info] generating random state\n");
     my_float_t sum_pow2 = 0;
-    std::vector<my_float_t> sum_pow2_list(num_omp_threads);
+    my_float_t sum_pow2_list[num_omp_threads];
     std::chrono::_V2::system_clock::time_point
         time_rng_begin[num_omp_threads],
         time_rng_end[num_omp_threads];
@@ -298,14 +298,16 @@ int main() {
     // my_float_t* state_data_host_2;
     // CHECK_CUDA((cudaError_t (*)(void**, size_t))&cudaMallocHost, (void**)&state_data_host_2, num_states * sizeof(*state_data_host_2));
     // CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host_2, num_states * sizeof(*state_data_host_2), 0);
-    my_float_t* state_data_host_2 = (my_float_t*)malloc(num_states * sizeof(*state_data_host_2));
+    my_float_t* const state_data_host_2 = (my_float_t*)malloc(num_states * sizeof(*state_data_host_2));
     // Defer defer_free_state_data_host_2(cudaFreeHost, (void*)state_data_host_2);
     Defer defer_free_state_data_host_2(free, (void*)state_data_host_2);
     memcpy(state_data_host_2, state_data_host, num_states * sizeof(*state_data_host_2));
 
     my_float_t* state_data_device_list[num_gpus];
     // my_array<my_float_t*, num_gpus> state_data_device_list;
-    std::vector<decltype(Defer(cudaFree, (void*)0))> defer_free_device_mem;
+    // std::vector<decltype(Defer(cudaFree, (void*)0))> defer_free_device_mem;
+    decltype(Defer(cudaFree, (void*)0)) defer_free_device_mem[num_gpus];
+    // Defer<decltype(&cudaFree), void*> defer_free_device_mem[num_gpus];
 
     for(int i=0; i<num_gpus; i++) {
     // for(int i=num_gpus-1; i>=0; i--) {
@@ -321,7 +323,8 @@ int main() {
         state_data_device_list[i] = state_data_device;
 
         CHECK_CUDA(cudaMemcpyAsync, state_data_device, &state_data_host[num_states_local * i], num_states_local * sizeof(*state_data_device), cudaMemcpyHostToDevice, stream[i]);
-        defer_free_device_mem.push_back({cudaFree, (void*)state_data_device});
+        // defer_free_device_mem.push_back({cudaFree, (void*)state_data_device});
+        defer_free_device_mem[i] = {cudaFree, (void*)state_data_device};
 
         // cudaEvent_t event_cudaMemcpyAsync;
         // CHECK_CUDA(cudaEventCreateWithFlags, &event_cudaMemcpyAsync, cudaEventDefault);
