@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <random>
 
 #include <omp.h>
 #include <cuda_runtime.h>
@@ -34,7 +35,7 @@ int const log_num_gpus = log2_compile_time<int, num_gpus>::value;
 int const num_omp_threads = 256;
 int const log_num_omp_threads = log2_compile_time<int, num_omp_threads>::value;
 
-int const num_qubits = 16;
+int const num_qubits = 30;
 int const log_block_size = 8;
 
 typedef double my_float_t;
@@ -184,7 +185,6 @@ int main() {
 
     fprintf(stderr, "[info] num_omp_threads=%d\n", num_omp_threads);
 
-
     // int const dev_list[] = {0, 1, 2, 3};
     // int const num_gpus = ARRAY_SIZE(dev_list);
     // int const log_num_gpus = log2(num_gpus);
@@ -198,11 +198,9 @@ int main() {
         CHECK_CUDA(cudaSetDevice, gpu_i);
 
         CHECK_CUDA(cudaStreamCreate, &stream[i]);
-
         
         CHECK_CUDA(cudaEventCreateWithFlags, &event_1[i], cudaEventDefault);
         // CHECK_CUDA((cudaError_t(*)(cudaEvent_t*))cudaEventCreate, &event_1);
-
         
         CHECK_CUDA(cudaEventCreateWithFlags, &event_2[i], cudaEventDefault);
         // CHECK_CUDA((cudaError_t(*)(cudaEvent_t*))cudaEventCreate, &event_2);
@@ -213,11 +211,10 @@ int main() {
     CHECK_CUDA(cudaEventCreateWithFlags, &ref_event, cudaEventDefault);
     CHECK_CUDA(cudaEventRecord, ref_event, stream[0]);
 
-
     int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
 
-    int64_t const num_qubits_local = num_qubits - log_num_gpus;
-    int64_t const num_states_local = ((int64_t)1) << num_qubits_local;
+    int const num_qubits_local = num_qubits - log_num_gpus;
+    int64_t const num_states_local = ((int64_t)1) << ((int64_t)num_qubits_local);
     int const block_size = 1 << log_block_size;
     int64_t const num_blocks = ((int64_t)1) << ((int64_t)(num_qubits_local-1-log_block_size));
     // int64_t const num_threads = ((int64_t)1) << ((int64_t)(num_qubits-1));
@@ -225,9 +222,10 @@ int main() {
     int64_t const num_qubits_local_omp = num_qubits - log_num_omp_threads;
     int64_t const num_states_local_omp = ((int64_t)1) << num_qubits_local_omp;
 
-
     int const target_qubit_num = num_qubits - 1;
+    fprintf(stderr, "[info] target_qubit_num=%d\n", target_qubit_num);
 
+    fprintf(stderr, "[info] cudaMallocHost state_data_host\n", target_qubit_num);
     my_float_t* state_data_host;
     // CHECK_CUDA((cudaError_t (*)(void**, size_t))&cudaMallocHost, (void**)&state_data_host, num_states * sizeof(*state_data_host));
     CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host, num_states * sizeof(*state_data_host), 0);
@@ -238,23 +236,71 @@ int main() {
     Defer defer_free_state_data_host(cudaFreeHost, (void*)state_data_host);
 
     fprintf(stderr, "[info] generating random state\n");
+    my_float_t sum_pow2 = 0;
+    std::vector<my_float_t> sum_pow2_list(num_omp_threads);
+    std::chrono::_V2::system_clock::time_point
+        time_rng_begin[num_omp_threads],
+        time_rng_end[num_omp_threads];
 
+    #pragma omp parallel
     {
-        double sum_pow2 = 0;
-        for(int state_num=0; state_num<num_states; state_num++) {
-            my_float_t const amp = static_cast<my_float_t>(rand()) / RAND_MAX;
+        int const omp_thread_num = omp_get_thread_num();
+
+        time_rng_begin[omp_thread_num] = std::chrono::high_resolution_clock::now();
+
+        std::mt19937_64 mt(12345 + omp_thread_num);
+        std::uniform_real_distribution<double> uni01(0.0,1.0);
+
+        my_float_t sum_pow2_local = 0;
+        for(int64_t state_num = num_states_local_omp * omp_thread_num;
+            state_num < num_states_local_omp * (omp_thread_num + 1);
+            state_num++) {
+            // my_float_t const amp = static_cast<my_float_t>(rand()) / RAND_MAX;
+            my_float_t const amp = uni01(mt);
             state_data_host[state_num] = amp;
-            sum_pow2 += amp * amp;
+            sum_pow2_local += amp * amp;
         }
-        for(int state_num=0; state_num<num_states; state_num++) {
+
+        sum_pow2_list[omp_thread_num] = sum_pow2_local;
+
+        #pragma omp barrier
+
+        #pragma omp single
+        for(int i=0; i<num_omp_threads; i++) {
+            sum_pow2 += sum_pow2_list[i];
+        }
+
+        #pragma omp barrier
+
+        for(int64_t state_num = num_states_local_omp * omp_thread_num;
+            state_num < num_states_local_omp * (omp_thread_num + 1);
+            state_num++) {
             state_data_host[state_num] /= sum_pow2;
         }
+
+        time_rng_end[omp_thread_num] = std::chrono::high_resolution_clock::now();
     }
 
-    my_float_t* state_data_host_2;
+    double elapsed_rng = 0;
+    for(int i=0; i<num_omp_threads; i++) {
+        double const elapsed_rng_i = std::chrono::duration<double>(time_rng_end[i] - time_rng_begin[i]).count();
+        if(elapsed_rng_i>elapsed_rng) {
+            elapsed_rng = elapsed_rng_i;
+        }
+    }
+    fprintf(stderr, "[info] elapsed_rng=%lf\n", elapsed_rng);
+
+    // for(int64_t state_num=0; state_num<num_states; state_num++) {
+    //     state_data_host[state_num] /= sum_pow2;
+    // }
+
+
+    // my_float_t* state_data_host_2;
     // CHECK_CUDA((cudaError_t (*)(void**, size_t))&cudaMallocHost, (void**)&state_data_host_2, num_states * sizeof(*state_data_host_2));
-    CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host_2, num_states * sizeof(*state_data_host_2), 0);
-    Defer defer_free_state_data_host_2(cudaFreeHost, (void*)state_data_host_2);
+    // CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host_2, num_states * sizeof(*state_data_host_2), 0);
+    my_float_t* state_data_host_2 = (my_float_t*)malloc(num_states * sizeof(*state_data_host_2));
+    // Defer defer_free_state_data_host_2(cudaFreeHost, (void*)state_data_host_2);
+    Defer defer_free_state_data_host_2(free, (void*)state_data_host_2);
     memcpy(state_data_host_2, state_data_host, num_states * sizeof(*state_data_host_2));
 
     my_float_t* state_data_device_list[num_gpus];
@@ -363,12 +409,11 @@ int main() {
 
     #pragma omp parallel
     {
-        int const num_omp_threads_runtime = omp_get_num_threads();
-
-        if(num_omp_threads!=num_omp_threads_runtime) {
-            fprintf(stderr, "[error] num_omp_threads=%f num_omp_threads_runtime=%d\n", num_omp_threads, num_omp_threads_runtime);
-            // return -1;
-        }
+        // int const num_omp_threads_runtime = omp_get_num_threads();
+        // if(num_omp_threads!=num_omp_threads_runtime) {
+        //     fprintf(stderr, "[error] num_omp_threads=%f num_omp_threads_runtime=%d\n", num_omp_threads, num_omp_threads_runtime);
+        //     // return -1;
+        // }
 
         int const omp_thread_num = omp_get_thread_num();
         // if (omp_thread_num==0) {
@@ -418,6 +463,30 @@ int main() {
         CHECK_CUDA(cudaStreamSynchronize, stream[i]);
     }
 
+    // double const elapsed = [](auto event_1, auto event_2) {
+    //     float _elapsed_fp32;
+    //     CHECK_CUDA(cudaEventElapsedTime, &_elapsed_fp32, event_1, event_2);
+    //     return _elapsed_fp32 * 1e-3;
+    // } (event_1, event_2);
+
+    // double time_1_min = 1e300;
+    // double time_2_max = -1e300;
+    double elapsed_gpu = 0;
+    for(int i=0; i<num_gpus; i++) {
+        int const gpu_i = gpu_list[i]; 
+        CHECK_CUDA(cudaSetDevice, gpu_i);
+
+        float elapsed_i_ms;
+        CHECK_CUDA(cudaEventElapsedTime, &elapsed_i_ms, event_1[i], event_2[i]);
+        double const elapsed_i = elapsed_i_ms * 1e-3;
+
+        if(elapsed_i>elapsed_gpu) {
+            elapsed_gpu = elapsed_i;
+        }
+    }
+    fprintf(stderr, "[info] elapsed_gpu=%lf\n", elapsed_gpu);
+
+
     // CHECK_CUDA(cudaStreamWaitEvent , stream, event_2, 0);
 
     // CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states * sizeof(*state_data_host), cudaMemcpyDeviceToHost, stream);
@@ -452,28 +521,6 @@ int main() {
 
     // cudaDeviceSynchronize();
 
-    // double const elapsed = [](auto event_1, auto event_2) {
-    //     float _elapsed_fp32;
-    //     CHECK_CUDA(cudaEventElapsedTime, &_elapsed_fp32, event_1, event_2);
-    //     return _elapsed_fp32 * 1e-3;
-    // } (event_1, event_2);
-
-    // double time_1_min = 1e300;
-    // double time_2_max = -1e300;
-    double elapsed_gpu = 0;
-    for(int i=0; i<num_gpus; i++) {
-        int const gpu_i = gpu_list[i]; 
-        CHECK_CUDA(cudaSetDevice, gpu_i);
-
-        float elapsed_i_ms;
-        CHECK_CUDA(cudaEventElapsedTime, &elapsed_i_ms, event_1[i], event_2[i]);
-        double const elapsed_i = elapsed_i_ms * 1e-3;
-
-        if(elapsed_i>elapsed_gpu) {
-            elapsed_gpu = elapsed_i;
-        }
-    }
-    fprintf(stderr, "[info] elapsed_gpu=%lf\n", elapsed_gpu);
 
     my_float_t max_diff = 0;
     for(int i=0; i<num_states; i++) {

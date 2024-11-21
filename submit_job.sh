@@ -43,7 +43,7 @@ nvcc -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
 
 ./"${EXE_FN}"
 
-echo "[info] job finished" 1>&2
+echo "[info] the end of job card" 1>&2
 EOF
 
 sbatch "${JOB_FN}"
