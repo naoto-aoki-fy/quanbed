@@ -10,6 +10,7 @@
 #include <cmath>
 #include <chrono>
 
+#include <omp.h>
 #include <cuda_runtime.h>
 
 #define ARRAY_SIZE(array) (sizeof(array)/sizeof(*array))
@@ -30,7 +31,10 @@ int const gpu_list[] = {0, 1, 2, 3};
 int const num_gpus = ARRAY_SIZE(gpu_list);
 int const log_num_gpus = log2_compile_time<int, num_gpus>::value;
 
-int const num_qubits = 32;
+int const num_omp_threads = 256;
+int const log_num_omp_threads = log2_compile_time<int, num_omp_threads>::value;
+
+int const num_qubits = 16;
 int const log_block_size = 8;
 
 typedef double my_float_t;
@@ -170,11 +174,20 @@ int main() {
 
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
 
+    fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
+    fprintf(stderr, "[info] num_gpus=%d (", num_gpus);
+    for(int i=0; i<num_gpus; i++) {
+        fprintf(stderr, "%d, ", gpu_list[i]);
+    }
+    fprintf(stderr, ")\n");
+    fprintf(stderr, "[info] log_block_size=%d\n", log_block_size);
+
+    fprintf(stderr, "[info] num_omp_threads=%d\n", num_omp_threads);
+
+
     // int const dev_list[] = {0, 1, 2, 3};
     // int const num_gpus = ARRAY_SIZE(dev_list);
     // int const log_num_gpus = log2(num_gpus);
-
-    
 
     std::vector<cudaStream_t> stream(num_gpus);
     std::vector<cudaEvent_t> event_1(num_gpus);
@@ -208,7 +221,12 @@ int main() {
     int const block_size = 1 << log_block_size;
     int64_t const num_blocks = ((int64_t)1) << ((int64_t)(num_qubits_local-1-log_block_size));
     // int64_t const num_threads = ((int64_t)1) << ((int64_t)(num_qubits-1));
-    int const target_qubit_num = 0;
+
+    int64_t const num_qubits_local_omp = num_qubits - log_num_omp_threads;
+    int64_t const num_states_local_omp = ((int64_t)1) << num_qubits_local_omp;
+
+
+    int const target_qubit_num = num_qubits - 1;
 
     my_float_t* state_data_host;
     // CHECK_CUDA((cudaError_t (*)(void**, size_t))&cudaMallocHost, (void**)&state_data_host, num_states * sizeof(*state_data_host));
@@ -336,24 +354,64 @@ int main() {
 
     fprintf(stderr, "[info] cpu_hadamard\n");
 
-    // my_float_t* state_data_host_2_split[num_gpus];
-    // for(int i=0; i<num_gpus; i++) {
-    //     state_data_host_2_split[i] = &state_data_host_2[i * num_states_local];
-    // }
-    // for(int i=0; i<num_gpus; i++) {
-    //     // state_data_host_2_split[i] = &state_data_host_2[i * num_states_local];
-    //     cpu_gate<hadamard, num_gpus>(i, num_qubits, target_qubit_num, state_data_host_2_split);
-    // }
+    my_float_t* state_data_host_2_split[num_omp_threads];
+    std::chrono::_V2::system_clock::time_point
+        time_cpu_begin[num_omp_threads],
+        time_cpu_end[num_omp_threads];
 
-    auto start = std::chrono::high_resolution_clock::now();
+    omp_set_num_threads(num_omp_threads);
 
-    cpu_gate<hadamard, 1>(0, num_qubits, target_qubit_num, &state_data_host_2);
+    #pragma omp parallel
+    {
+        int const num_omp_threads_runtime = omp_get_num_threads();
 
-    auto end = std::chrono::high_resolution_clock::now();
+        if(num_omp_threads!=num_omp_threads_runtime) {
+            fprintf(stderr, "[error] num_omp_threads=%f num_omp_threads_runtime=%d\n", num_omp_threads, num_omp_threads_runtime);
+            // return -1;
+        }
 
-    double const elapsed_cpu = std::chrono::duration<double>(end - start).count();
+        int const omp_thread_num = omp_get_thread_num();
+        // if (omp_thread_num==0) {
+        // my_float_t* state_data_host_2_split[num_gpus];
+        // for(int i=0; i<num_gpus; i++) {
+        state_data_host_2_split[omp_thread_num] = (my_float_t*)malloc(num_states_local_omp * sizeof(state_data_host_2_split[0][0]));
+        // state_data_host_2_split[i] = &state_data_host_2[i * num_states_local];
+        // }
+        //}
+
+        memcpy(state_data_host_2_split[omp_thread_num], state_data_host_2 + num_states_local_omp * omp_thread_num, num_states_local_omp * sizeof(*state_data_host_2));
+
+        #pragma omp barrier
+
+        time_cpu_begin[omp_thread_num] = std::chrono::high_resolution_clock::now();
+
+        // cpu_gate<hadamard, 1>(0, num_qubits, target_qubit_num, &state_data_host_2);
+
+        // for(int i=0; i<num_gpus; i++) {
+        // state_data_host_2_split[i] = &state_data_host_2[i * num_states_local];
+        cpu_gate<hadamard, num_omp_threads>(omp_thread_num, num_qubits, target_qubit_num, state_data_host_2_split);
+        //}
+
+        // auto end = std::chrono::high_resolution_clock::now();
+        time_cpu_end[omp_thread_num] = std::chrono::high_resolution_clock::now();
+
+        #pragma omp barrier
+
+        memcpy(state_data_host_2 + num_states_local_omp * omp_thread_num, state_data_host_2_split[omp_thread_num], num_states_local_omp * sizeof(*state_data_host_2));
+
+    }
+
+    double elapsed_cpu = 0;
+    for(int i=0; i<num_omp_threads; i++) {
+        double const elapsed_cpu_i = std::chrono::duration<double>(time_cpu_end[i] - time_cpu_begin[i]).count();
+        if(elapsed_cpu_i>elapsed_cpu) {
+            elapsed_cpu = elapsed_cpu_i;
+        }
+    }
 
     fprintf(stderr, "[info] elapsed_cpu=%lf\n", elapsed_cpu);
+
+
 
     fprintf(stderr, "[info] wait for GPU kernel completion...\n");
     for(int i=0; i<num_gpus; i++) {
