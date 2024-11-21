@@ -17,12 +17,13 @@ EXE_FN="${PROGRAM_NAME}.exe"
 cp "${ORIGINAL_CODE_FN}" "${CODE_FN}"
 
 JOB_FN="job_${BASHPID}.sh"
+JOBNAME="${BASHPID}"
 
 OUTPUT_FN="output_${BASHPID}"
 
 cat <<EOF > "${JOB_FN}"
 #!/bin/bash
-#SBATCH --job-name=job
+#SBATCH --job-name="${JOBNAME}"
 #SBATCH --partition="${JOB_PARTITION}"
 #SBATCH --output="${OUTPUT_FN}.out"
 #SBATCH --error="${OUTPUT_FN}.err"
