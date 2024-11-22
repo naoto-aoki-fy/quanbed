@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
+#include <utility>
 
 #include <numaif.h>
 #include <sys/mman.h>
@@ -76,48 +77,59 @@ void check_cuda(char const* const filename_abs, int const lineno, char const* co
 // マクロで簡単に呼び出せるようにラップ
 #define CHECK_CUDA(func, ...) check_cuda(__FILE__, __LINE__, #func, func, __VA_ARGS__)
 
-// 任意の型の引数を取る関数をラップするテンプレート
-template <typename Func, typename Arg>
+// 可変長引数を取る関数ポインタをラップするテンプレート
+template <typename Func, typename... Args>
 class Defer {
 public:
-    Defer(): valid_(false) {}
+    // デフォルトコンストラクタ
+    Defer() : valid_(false) {}
 
     // コンストラクタで関数ポインタと引数を受け取る
-    Defer(Func func, Arg&& arg)
-        : func_(func), arg_(std::forward<Arg>(arg)), valid_(true) {}
+    // Defer(Func func, Args&&... args)
+    //     : func_(func), args_(std::forward<Args>(args)...), valid_(true) {}
+    Defer(Func func, Args... args)
+        : func_(func), args_(args...), valid_(true) {}
 
     // ムーブ代入演算子
     Defer& operator=(Defer&& other) noexcept {
-        // fprintf(stderr, "[info] move substitute\n");
         if (this != &other) {
-            func_ = std::move(other.func_);
-            arg_ = std::move(other.arg_);
+            func_ = other.func_;
+            // args_ = std::move(other.args_);
+            args_ = other.args_;
             valid_ = other.valid_;
-            other.valid_ = false;  // 元のオブジェクトの処理を無効化
+            other.valid_ = false;
         }
         return *this;
     }
 
     // ムーブコンストラクタ
     Defer(Defer&& other) noexcept
-        : func_(std::move(other.func_)), arg_(std::move(other.arg_)), valid_(other.valid_) {
-        // fprintf(stderr, "[info] move constructor\n");
-        other.valid_ = false;  // 元のオブジェクトの処理を無効化
+        // : func_(other.func_), args_(std::move(other.args_)), valid_(other.valid_) {
+        : func_(other.func_), args_(other.args_), valid_(other.valid_) {
+        other.valid_ = false;
     }
 
     // デストラクタで関数ポインタを呼び出す
     ~Defer() {
         if (valid_) {
-            // fprintf(stderr, "[debug] deconstructor called\n");
-            func_(arg_);
+            call(std::index_sequence_for<Args...>{});
         }
     }
 
 private:
-    Func func_; // 関数ポインタ
-    Arg arg_; // 関数の引数
+    // 関数ポインタ
+    Func func_;
+    // 関数の引数（可変長引数をタプルで保持）
+    std::tuple<Args...> args_;
     bool valid_;
+
+    // 引数を展開して関数を呼び出す
+    template <std::size_t... I>
+    void call(std::index_sequence<I...>) {
+        func_(std::get<I>(args_)...);
+    }
 };
+
 
 template<int num_split_areas>
 class hadamard {
@@ -202,18 +214,39 @@ int main() {
     cudaEvent_t event_1[num_gpus];
     cudaEvent_t event_2[num_gpus];
 
+    // Defer<void(*)()> defer_destroy_streams[num_gpus];
+    decltype(Defer(cudaStreamDestroy, stream[0])) defer_destroy_streams[num_gpus];
+    // Defer<decltype(&cudaStreamDestroy), decltype(stream[0])> defer_destroy_streams[num_gpus];
+    decltype(Defer(cudaEventDestroy, event_1[0])) defer_destroy_event_1[num_gpus];
+    decltype(Defer(cudaEventDestroy, event_2[0])) defer_destroy_event_2[num_gpus];
+
     for(int i=0; i<num_gpus; i++) {
         int const gpu_i = gpu_list[i]; 
         CHECK_CUDA(cudaSetDevice, gpu_i);
 
         CHECK_CUDA(cudaStreamCreate, &stream[i]);
+        // defer_destroy_streams[i] = decltype(defer_destroy_streams)({cudaStreamDestroy, stream[i]});
+        defer_destroy_streams[i] = {cudaStreamDestroy, stream[i]};
+        // defer_destroy_streams[i] = decltype(defer_destroy_streams[0])({&cudaStreamDestroy, stream[i]});
         
         CHECK_CUDA(cudaEventCreateWithFlags, &event_1[i], cudaEventDefault);
         // CHECK_CUDA((cudaError_t(*)(cudaEvent_t*))cudaEventCreate, &event_1);
+        defer_destroy_event_1[i] = {cudaEventDestroy, event_1[i]};
         
         CHECK_CUDA(cudaEventCreateWithFlags, &event_2[i], cudaEventDefault);
         // CHECK_CUDA((cudaError_t(*)(cudaEvent_t*))cudaEventCreate, &event_2);
+        defer_destroy_event_2[i] = {cudaEventDestroy, event_2[i]};
     }
+
+    // struct defer_destroy_streams_class {
+    //     cudaStream_t* stream; int length;
+    //     defer_destroy_streams_class(cudaStream_t* stream, int length) : stream(stream), length(length) {}
+    //     ~defer_destroy_streams_class() {
+    //         for (int i = 0; i < length; ++i) {
+    //             cudaStreamDestroy(stream[i]);
+    //         }
+    //     }
+    // } defer_destroy_streams_(stream, num_gpus);
 
     CHECK_CUDA(cudaSetDevice, gpu_list[0]);
     cudaEvent_t ref_event;
