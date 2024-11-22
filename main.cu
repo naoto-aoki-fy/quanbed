@@ -248,11 +248,6 @@ int main() {
     //     }
     // } defer_destroy_streams_(stream, num_gpus);
 
-    CHECK_CUDA(cudaSetDevice, gpu_list[0]);
-    cudaEvent_t ref_event;
-    CHECK_CUDA(cudaEventCreateWithFlags, &ref_event, cudaEventDefault);
-    CHECK_CUDA(cudaEventRecord, ref_event, stream[0]);
-
     int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
 
     int const num_qubits_local = num_qubits - log_num_gpus;
