@@ -35,7 +35,7 @@ int const gpu_list[] = {0, 1, 2, 3};
 // int const gpu_list[] = {0, 0, 0, 0, 0, 0, 0, 0};
 // int const gpu_list[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-bool const do_num_sort = false;
+bool const do_numa_sort = false;
 // int const num_gpus = 1 << log_num_gpus;
 int const num_gpus = ARRAY_SIZE(gpu_list);
 int const log_num_gpus = log2_compile_time<int, num_gpus>::value;
@@ -204,7 +204,7 @@ int main() {
 
     fprintf(stderr, "[info] num_omp_threads=%d\n", num_omp_threads);
 
-    fprintf(stderr, "[info] do_numa_sort=%d\n", do_num_sort);
+    fprintf(stderr, "[info] do_numa_sort=%d\n", do_numa_sort);
 
     // int const dev_list[] = {0, 1, 2, 3};
     // int const num_gpus = ARRAY_SIZE(dev_list);
@@ -486,7 +486,7 @@ int main() {
             }
 
             // ソート：元の配列の値を基にインデックスをソート
-            if(do_num_sort) {
+            if(do_numa_sort) {
                 std::sort(thread_num_sort.begin(), thread_num_sort.end(), [&numa_node_list](auto i1, auto i2) { return numa_node_list[i1] < numa_node_list[i2]; /* 昇順 */ });
             }
             
@@ -519,7 +519,7 @@ int main() {
         // }
 
         my_float_t* state_data_host_2_split_i;
-        if(do_num_sort) {
+        if(do_numa_sort) {
             state_data_host_2_split_i = (my_float_t*)numa_alloc_onnode(num_states_local_omp * sizeof(*state_data_host_2_split_i), current_node);
         } else {
             state_data_host_2_split_i = (my_float_t*)malloc(num_states_local_omp * sizeof(*state_data_host_2_split_i));
