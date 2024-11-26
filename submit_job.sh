@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "[info] pid: ${BASHPID}" 1>&2
+DATENOW="$(date +%Y%m%d_%H%M)"
 
 set -xe
 
@@ -10,16 +10,16 @@ JOB_PARTITION="${1}"
 ORIGINAL_CODE_FN="main.cu"
 
 FN_EXT="${ORIGINAL_CODE_FN##*.}"
-PROGRAM_NAME="${ORIGINAL_CODE_FN%.*}_${BASHPID}"
+PROGRAM_NAME="${ORIGINAL_CODE_FN%.*}_${DATENOW}"
 CODE_FN="${PROGRAM_NAME}.${FN_EXT}"
 EXE_FN="${PROGRAM_NAME}.exe"
 
 cp "${ORIGINAL_CODE_FN}" "${CODE_FN}"
 
-JOB_FN="job_${BASHPID}.sh"
-JOBNAME="${BASHPID}"
+JOB_FN="job_${DATENOW}.sh"
+JOBNAME="${DATENOW}"
 
-OUTPUT_FN="output_${BASHPID}"
+OUTPUT_FN="output_${DATENOW}"
 
 cat <<EOF > "${JOB_FN}"
 #!/bin/bash
@@ -48,4 +48,4 @@ EOF
 
 sbatch "${JOB_FN}"
 
-echo "[info] pid: ${BASHPID}" 1>&2
+echo "[info] date: ${DATENOW}" 1>&2
