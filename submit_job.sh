@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DATENOW="$(date +%Y%m%d_%H%M)"
+DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 set -xe
 
