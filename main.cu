@@ -424,7 +424,7 @@ int main() {
 
         gpu_gate<hadamard, num_gpus><<<num_blocks, block_size, 0, stream[i]>>>(i, num_qubits, target_qubit_num, state_data_device_list);
 
-        CHECK_CUDA(cudaStreamSynchronize, stream[i]);
+        // CHECK_CUDA(cudaStreamSynchronize, stream[i]);
 
     }
 
