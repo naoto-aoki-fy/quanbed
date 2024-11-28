@@ -39,7 +39,7 @@ module load system/${JOB_PARTITION} nvhpc
 
 set -xe
 
-nvcc -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -lnuma -o "${EXE_FN}"
+nvcc -arch=sm_80 -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
 
 # ./"${EXE_FN}"
 
