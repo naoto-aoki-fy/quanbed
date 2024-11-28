@@ -109,16 +109,16 @@ private:
     }
 };
 
-__constant__ my_float_t* state_data_device_list_constmem[16];
+__constant__ my_float_t* state_data_device_list_constmem[8];
 
-// template<int num_split_areas>
 class hadamard { public:
     static __device__ __host__ void apply(int num_split_areas, int64_t thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data_arg) {
 
         #ifdef __CUDA_ARCH__
             my_float_t** state_data = state_data_device_list_constmem;
+            // todo: 'const' not applicable. nvcc bug?
         #else
-            my_float_t** state_data = state_data_arg;
+            my_float_t** const state_data = state_data_arg;
         #endif
 
         int const log_num_split_areas = log2_int(num_split_areas);
@@ -177,11 +177,8 @@ int main() {
 
     int const rng_seed = 12345;
     std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
-    // {0};
-    // {0, 1};
-    // {0, 0};
-    // {0, 0, 0, 0, 0, 0, 0, 0};
-    // {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // std::vector<int> gpu_list{0, 1, 2, 3};
+    // std::vector<int> gpu_list{0};
 
     int const num_gpus = gpu_list.size();
     int const log_num_gpus = log2_int(num_gpus);
@@ -189,7 +186,7 @@ int main() {
     int const num_omp_threads = 256;
     int const log_num_omp_threads = log2_int(num_omp_threads);
 
-    int const num_qubits = 30;
+    int const num_qubits = 24;
     int const log_block_size = 8;
 
     fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
@@ -253,9 +250,9 @@ int main() {
     int64_t const num_qubits_local_omp = num_qubits - log_num_omp_threads;
     int64_t const num_states_local_omp = ((int64_t)1) << num_qubits_local_omp;
 
-    int const target_qubit_num = 0;
-    fprintf(stderr, "[info] target_qubit_num=%d\n", target_qubit_num);
-    fprintf(stderr, "[info] cudaMallocHost state_data_host\n", target_qubit_num);
+    // int const target_qubit_num = 0;
+    // fprintf(stderr, "[info] target_qubit_num=%d\n", target_qubit_num);
+    fprintf(stderr, "[info] cudaMallocHost state_data_host\n");
     my_float_t* state_data_host;
     CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host, num_states * sizeof(*state_data_host), 0);
 
@@ -380,12 +377,22 @@ int main() {
         CHECK_CUDA(cudaEventRecord, event_1[i], stream[i]);
     }
 
-    for(int i=0; i<num_gpus; i++) {
+    for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
 
-        int const gpu_i = gpu_list[i]; 
-        CHECK_CUDA(cudaSetDevice, gpu_i);
+        for(int i = 0; i < num_gpus; i++) {
 
-        cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, 0);
+            int const gpu_i = gpu_list[i]; 
+            CHECK_CUDA(cudaSetDevice, gpu_i);
+
+            cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, 0);
+
+        }
+
+        if (target_qubit_num >= num_qubits - log_num_gpus) {
+            for(int i=0; i<num_gpus; i++) {
+                CHECK_CUDA(cudaStreamSynchronize, stream[i]);
+            }
+        }
 
     }
 
@@ -417,7 +424,15 @@ int main() {
 
         time_cpu_begin[omp_thread_num] = std::chrono::high_resolution_clock::now();
 
-        omp_gate<hadamard>(num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
+        for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
+
+            omp_gate<hadamard>(num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
+
+            if (target_qubit_num >= num_qubits - log_num_omp_threads - 1) {
+                #pragma omp barrier
+            }
+
+        }
 
         time_cpu_end[omp_thread_num] = std::chrono::high_resolution_clock::now();
 
