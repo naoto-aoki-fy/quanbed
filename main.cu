@@ -176,15 +176,17 @@ int main() {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
 
     int const rng_seed = 12345;
-    std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
+    // std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
     // std::vector<int> gpu_list{0, 1, 2, 3};
-    // std::vector<int> gpu_list{0};
+    std::vector<int> gpu_list{0};
 
     int const num_gpus = gpu_list.size();
     int const log_num_gpus = log2_int(num_gpus);
 
-    int const num_omp_threads = 256;
-    int const log_num_omp_threads = log2_int(num_omp_threads);
+    int const omp_max_threads = omp_get_max_threads();
+    int const log_num_omp_threads = log2_int(omp_max_threads);
+    int const num_omp_threads = 1 << log_num_omp_threads;
+    omp_set_num_threads(num_omp_threads);
 
     int const num_qubits = 24;
     int const log_block_size = 8;
