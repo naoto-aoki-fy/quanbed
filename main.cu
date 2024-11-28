@@ -175,9 +175,11 @@ int main() {
 
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
 
+    int const num_samples = 128;
     int const rng_seed = 12345;
     // std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
     // std::vector<int> gpu_list{0, 1, 2, 3};
+    // std::vector<int> gpu_list{0, 1};
     std::vector<int> gpu_list{0};
 
     int const num_gpus = gpu_list.size();
@@ -374,32 +376,58 @@ int main() {
     }
 
     fprintf(stderr, "[info] gpu_hadamard\n");
+    fprintf(stdout, "cuda\n");
 
-    for(int i=0; i<num_gpus; i++) {
-        CHECK_CUDA(cudaEventRecord, event_1[i], stream[i]);
-    }
+    for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
-    for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
+        for(int i=0; i<num_gpus; i++) {
+            CHECK_CUDA(cudaEventRecord, event_1[i], stream[i]);
+        }
 
-        for(int i = 0; i < num_gpus; i++) {
+        for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
 
+            for(int i = 0; i < num_gpus; i++) {
+
+                int const gpu_i = gpu_list[i]; 
+                CHECK_CUDA(cudaSetDevice, gpu_i);
+
+                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, 0);
+
+            }
+
+            if (target_qubit_num >= num_qubits - log_num_gpus) {
+                for(int i=0; i<num_gpus; i++) {
+                    CHECK_CUDA(cudaStreamSynchronize, stream[i]);
+                }
+            }
+
+        }
+
+        for(int i=0; i<num_gpus; i++) {
+            CHECK_CUDA(cudaEventRecord, event_2[i], stream[i]);
+        }
+
+        // fprintf(stderr, "[info] wait for GPU kernel completion...\n");
+        for(int i=0; i<num_gpus; i++) {
+            CHECK_CUDA(cudaStreamSynchronize, stream[i]);
+        }
+
+        double elapsed_gpu = 0;
+        for(int i=0; i<num_gpus; i++) {
             int const gpu_i = gpu_list[i]; 
             CHECK_CUDA(cudaSetDevice, gpu_i);
 
-            cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, 0);
+            float elapsed_i_ms;
+            CHECK_CUDA(cudaEventElapsedTime, &elapsed_i_ms, event_1[i], event_2[i]);
+            double const elapsed_i = elapsed_i_ms * 1e-3;
 
-        }
-
-        if (target_qubit_num >= num_qubits - log_num_gpus) {
-            for(int i=0; i<num_gpus; i++) {
-                CHECK_CUDA(cudaStreamSynchronize, stream[i]);
+            if(elapsed_i>elapsed_gpu) {
+                elapsed_gpu = elapsed_i;
             }
         }
+        fprintf(stderr, "[info] elapsed_gpu=%lf\n", elapsed_gpu);
+        fprintf(stdout, "%lf\n", elapsed_gpu);
 
-    }
-
-    for(int i=0; i<num_gpus; i++) {
-        CHECK_CUDA(cudaEventRecord, event_2[i], stream[i]);
     }
 
     fprintf(stderr, "[info] cpu_hadamard\n");
@@ -410,10 +438,11 @@ int main() {
         time_cpu_begin(num_omp_threads),
         time_cpu_end(num_omp_threads);
 
-    omp_set_num_threads(num_omp_threads);
+    fprintf(stdout, "omp\n");
 
     #pragma omp parallel
     {
+
         int const omp_thread_num = omp_get_thread_num();
 
         my_float_t* const state_data_host_2_split_i = (my_float_t*)malloc(num_states_local_omp * sizeof(*state_data_host_2_split_i));
@@ -424,19 +453,36 @@ int main() {
 
         #pragma omp barrier
 
-        time_cpu_begin[omp_thread_num] = std::chrono::high_resolution_clock::now();
+        for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
-        for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
+            time_cpu_begin[omp_thread_num] = std::chrono::high_resolution_clock::now();
 
-            omp_gate<hadamard>(num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
+            for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
 
-            if (target_qubit_num >= num_qubits - log_num_omp_threads - 1) {
-                #pragma omp barrier
+                omp_gate<hadamard>(num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
+
+                if (target_qubit_num >= num_qubits - log_num_omp_threads - 1) {
+                    #pragma omp barrier
+                }
+
+            }
+
+            time_cpu_end[omp_thread_num] = std::chrono::high_resolution_clock::now();
+
+            #pragma omp master
+            {
+                double elapsed_cpu = 0;
+                for(int i=0; i<num_omp_threads; i++) {
+                    double const elapsed_cpu_i = std::chrono::duration<double>(time_cpu_end[i] - time_cpu_begin[i]).count();
+                    if(elapsed_cpu_i>elapsed_cpu) {
+                        elapsed_cpu = elapsed_cpu_i;
+                    }
+                }
+                fprintf(stderr, "[info] elapsed_cpu=%lf\n", elapsed_cpu);
+                fprintf(stdout, "%lf\n", elapsed_cpu);
             }
 
         }
-
-        time_cpu_end[omp_thread_num] = std::chrono::high_resolution_clock::now();
 
         #pragma omp barrier
 
@@ -444,36 +490,7 @@ int main() {
 
     }
 
-    double elapsed_cpu = 0;
-    for(int i=0; i<num_omp_threads; i++) {
-        double const elapsed_cpu_i = std::chrono::duration<double>(time_cpu_end[i] - time_cpu_begin[i]).count();
-        if(elapsed_cpu_i>elapsed_cpu) {
-            elapsed_cpu = elapsed_cpu_i;
-        }
-    }
-
-    fprintf(stderr, "[info] elapsed_cpu=%lf\n", elapsed_cpu);
-
-    fprintf(stderr, "[info] wait for GPU kernel completion...\n");
-    for(int i=0; i<num_gpus; i++) {
-        CHECK_CUDA(cudaStreamSynchronize, stream[i]);
-    }
-
-    double elapsed_gpu = 0;
-    for(int i=0; i<num_gpus; i++) {
-        int const gpu_i = gpu_list[i]; 
-        CHECK_CUDA(cudaSetDevice, gpu_i);
-
-        float elapsed_i_ms;
-        CHECK_CUDA(cudaEventElapsedTime, &elapsed_i_ms, event_1[i], event_2[i]);
-        double const elapsed_i = elapsed_i_ms * 1e-3;
-
-        if(elapsed_i>elapsed_gpu) {
-            elapsed_gpu = elapsed_i;
-        }
-    }
-    fprintf(stderr, "[info] elapsed_gpu=%lf\n", elapsed_gpu);
-
+    fprintf(stderr, "[info] transfer device data to host memory\n");
     for(int i=0; i<num_gpus; i++) {
         int const gpu_i = gpu_list[i]; 
         CHECK_CUDA(cudaSetDevice, gpu_i);
@@ -482,7 +499,7 @@ int main() {
 
     }
 
-    fprintf(stderr, "[info] wait for GPU memory transfer completion...\n");
+    // fprintf(stderr, "[info] wait for GPU memory transfer completion...\n");
     for(int i=0; i<num_gpus; i++) {
         CHECK_CUDA(cudaStreamSynchronize, stream[i]);
     }
