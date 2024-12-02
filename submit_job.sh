@@ -33,7 +33,7 @@ cat <<EOF > "${JOB_FN}"
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH -t ${TIMELIMIT_SEC}
+#SBATCH -t ${TIMELIMIT_STR}
 
 # declare -p | grep -E '^declare -x' 1>&2
 python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"SLURM\")}));" 1>&2
