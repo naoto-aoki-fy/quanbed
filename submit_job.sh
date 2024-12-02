@@ -21,6 +21,9 @@ JOBNAME="${DATENOW}"
 
 OUTPUT_FN="output_${DATENOW}"
 
+TIMELIMIT_SEC=$((1*60*60))
+TIMELIMIT_STR=$(date -u -d @"$TIMELIMIT_SEC" +"%H:%M:%S")
+
 cat <<EOF > "${JOB_FN}"
 #!/bin/bash
 #SBATCH --job-name="${JOBNAME}"
@@ -30,7 +33,7 @@ cat <<EOF > "${JOB_FN}"
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 01:00:00
+#SBATCH -t ${TIMELIMIT_SEC}
 
 # declare -p | grep -E '^declare -x' 1>&2
 python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"SLURM\")}));" 1>&2
@@ -41,7 +44,7 @@ set -xe
 
 nvcc -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
 
-./"${EXE_FN}"
+timeout -k 60 -s INT $((${TIMELIMIT_SEC}-60*5)) ./"${EXE_FN}"
 
 echo "[info] the end of job card" 1>&2
 EOF
