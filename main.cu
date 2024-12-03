@@ -109,17 +109,10 @@ private:
     }
 };
 
-__constant__ my_float_t* state_data_device_list_constmem[8];
+const int max_num_gpus = 8;
 
 class hadamard { public:
-    static __device__ __host__ void apply(int num_split_areas, int64_t thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data_arg) {
-
-        #ifdef __CUDA_ARCH__
-            my_float_t** state_data = state_data_device_list_constmem;
-            // todo: 'const' not applicable. nvcc bug?
-        #else
-            my_float_t** const state_data = state_data_arg;
-        #endif
+    static __device__ __host__ void apply(int num_split_areas, int64_t thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data) {
 
         int const log_num_split_areas = log2_int(num_split_areas);
 
@@ -149,17 +142,17 @@ class hadamard { public:
 };
 
 template<class Gate>
-__global__ void cuda_gate(int num_split_areas, int64_t split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const) {
+__global__ void cuda_gate(int const num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t* state_data[max_num_gpus]) {
     int const log_num_split_areas = log2_int(num_split_areas);
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
     int64_t const num_threads_local = ((int64_t)1) << (num_qubits_local-1);
 
     int64_t const thread_num = threadIdx.x + blockIdx.x * blockDim.x + num_threads_local * split_num;
-    Gate::apply(num_split_areas, thread_num, num_qubits, target_qubit_num, 0);
+    Gate::apply(num_split_areas, thread_num, num_qubits, target_qubit_num, state_data);
 }
 
 template<class Gate>
-void omp_gate(int num_split_areas, int64_t split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data) {
+void omp_gate(int const num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data) {
 
     int const log_num_split_areas = log2_int(num_split_areas);
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
@@ -178,9 +171,9 @@ int main() {
     int const num_samples = 128;
     int const rng_seed = 12345;
     // std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
-    // std::vector<int> gpu_list{0, 1, 2, 3};
+    std::vector<int> gpu_list{0, 1, 2, 3};
     // std::vector<int> gpu_list{0, 1};
-    std::vector<int> gpu_list{0};
+    // std::vector<int> gpu_list{0};
 
     int const num_gpus = gpu_list.size();
     int const log_num_gpus = log2_int(num_gpus);
@@ -190,7 +183,7 @@ int main() {
     int const num_omp_threads = 1 << log_num_omp_threads;
     omp_set_num_threads(num_omp_threads);
 
-    int const num_qubits = 24;
+    int const num_qubits = 33;
     int const log_block_size = 8;
 
     fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
@@ -212,17 +205,6 @@ int main() {
     std::vector<cudaStream_t> stream(num_gpus);
     std::vector<cudaEvent_t> event_1(num_gpus);
     std::vector<cudaEvent_t> event_2(num_gpus);
-
-    std::vector<my_float_t**> state_data_device_list_constmem_addr(num_gpus);
-    for(int i=0; i<num_gpus; i++) {
-        CHECK_CUDA(cudaSetDevice, i);
-
-        my_float_t** addr;
-        CHECK_CUDA(cudaGetSymbolAddress<decltype(state_data_device_list_constmem)>, (void**)&addr, state_data_device_list_constmem);
-
-        state_data_device_list_constmem_addr[i] = (my_float_t**)addr;
-
-    }
 
     std::vector<decltype(Defer(cudaStreamDestroy, stream[0]))> defer_destroy_streams(num_gpus);
     std::vector<decltype(Defer(cudaEventDestroy, event_1[0]))> defer_destroy_event_1(num_gpus);
@@ -254,8 +236,6 @@ int main() {
     int64_t const num_qubits_local_omp = num_qubits - log_num_omp_threads;
     int64_t const num_states_local_omp = ((int64_t)1) << num_qubits_local_omp;
 
-    // int const target_qubit_num = 0;
-    // fprintf(stderr, "[info] target_qubit_num=%d\n", target_qubit_num);
     fprintf(stderr, "[info] cudaMallocHost state_data_host\n");
     my_float_t* state_data_host;
     CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host, num_states * sizeof(*state_data_host), 0);
@@ -320,7 +300,8 @@ int main() {
     Defer defer_free_state_data_host_2(free, (void*)state_data_host_2);
     memcpy(state_data_host_2, state_data_host, num_states * sizeof(*state_data_host_2));
 
-    std::vector<my_float_t*> state_data_device_list(num_gpus);
+    // std::vector<my_float_t*> state_data_device_list(num_gpus);
+    my_float_t* state_data_device_list[max_num_gpus];
     std::vector<decltype(Defer(cudaFree, (void*)0))> defer_free_device_mem(num_gpus);
 
     for(int i=0; i<num_gpus; i++) {
@@ -334,15 +315,6 @@ int main() {
 
         CHECK_CUDA(cudaMemcpyAsync, state_data_device, &state_data_host[num_states_local * i], num_states_local * sizeof(*state_data_device), cudaMemcpyHostToDevice, stream[i]);
         defer_free_device_mem[i] = {cudaFree, (void*)state_data_device};
-
-    }
-
-    for(int i=0; i<num_gpus; i++) {
-
-        int const gpu_i = gpu_list[i]; 
-        CHECK_CUDA(cudaSetDevice, gpu_i);
-
-        CHECK_CUDA(cudaMemcpyAsync, state_data_device_list_constmem_addr[i], &state_data_device_list[0], state_data_device_list.size() * sizeof(state_data_device_list[0]), cudaMemcpyHostToDevice, stream[i]);
 
     }
 
@@ -391,7 +363,7 @@ int main() {
                 int const gpu_i = gpu_list[i]; 
                 CHECK_CUDA(cudaSetDevice, gpu_i);
 
-                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, 0);
+                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, &state_data_device_list[0]);
 
             }
 
@@ -407,7 +379,6 @@ int main() {
             CHECK_CUDA(cudaEventRecord, event_2[i], stream[i]);
         }
 
-        // fprintf(stderr, "[info] wait for GPU kernel completion...\n");
         for(int i=0; i<num_gpus; i++) {
             CHECK_CUDA(cudaStreamSynchronize, stream[i]);
         }
@@ -499,7 +470,6 @@ int main() {
 
     }
 
-    // fprintf(stderr, "[info] wait for GPU memory transfer completion...\n");
     for(int i=0; i<num_gpus; i++) {
         CHECK_CUDA(cudaStreamSynchronize, stream[i]);
     }
