@@ -34,6 +34,8 @@ int log2_int(int arg) {
 typedef double my_float_t;
 typedef cuda::std::complex<my_float_t> my_complex_t;
 
+__constant__ my_complex_t* state_data_device_list_constmem[max_num_gpus];
+
 // 任意のCUDA API関数とその引数を受け取る
 template <typename Func, typename... Args>
 void check_cuda(char const* const filename_abs, int const lineno, char const* const funcname, Func func, Args&&... args)
@@ -110,7 +112,14 @@ private:
 };
 
 class hadamard { public:
-    static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data) {
+    static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data_arg) {
+
+        #ifdef __CUDA_ARCH__
+            my_complex_t** state_data = state_data_device_list_constmem;
+            // todo: 'const' not applicable. nvcc bug?
+        #else
+            my_complex_t** const state_data = state_data_arg;
+        #endif
 
         uint64_t const lower_mask = (((uint64_t)1)<<target_qubit_num) - (uint64_t)1;
         uint64_t const split_mask = (((uint64_t)1)<<((uint64_t)(num_qubits - log_num_split_areas))) - (uint64_t)1;
@@ -138,12 +147,12 @@ class hadamard { public:
 };
 
 template<class Gate>
-__global__ void cuda_gate(int const num_split_areas, int const log_num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t* state_data[max_num_gpus]) {
+__global__ void cuda_gate(int const num_split_areas, int const log_num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t**) {
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
     int64_t const num_threads_local = ((int64_t)1) << (num_qubits_local-1);
 
     int64_t const thread_num = threadIdx.x + blockIdx.x * blockDim.x + num_threads_local * split_num;
-    Gate::apply(num_split_areas, log_num_split_areas, thread_num, num_qubits, target_qubit_num, state_data);
+    Gate::apply(num_split_areas, log_num_split_areas, thread_num, num_qubits, target_qubit_num, 0);
 }
 
 template<class Gate>
@@ -164,9 +173,9 @@ int main() {
     int const num_samples = 128;
     int const rng_seed = 12345;
     // std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
-    std::vector<int> gpu_list{0, 1, 2, 3};
+    // std::vector<int> gpu_list{0, 1, 2, 3};
     // std::vector<int> gpu_list{0, 1};
-    // std::vector<int> gpu_list{0};
+    std::vector<int> gpu_list{0};
 
     int const num_gpus = gpu_list.size();
     int const log_num_gpus = log2_int(num_gpus);
@@ -176,7 +185,7 @@ int main() {
     int const num_omp_threads = 1 << log_num_omp_threads;
     omp_set_num_threads(num_omp_threads);
 
-    int const num_qubits = 33;
+    int const num_qubits = 24;
     int const log_block_size = 8;
 
     fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
@@ -216,6 +225,17 @@ int main() {
 
         CHECK_CUDA(cudaEventCreateWithFlags, &event_2[i], cudaEventDefault);
         defer_destroy_event_2[i] = {cudaEventDestroy, event_2[i]};
+
+    }
+
+    std::vector<my_float_t**> state_data_device_list_constmem_addr(num_gpus);
+    for(int i=0; i<num_gpus; i++) {
+        CHECK_CUDA(cudaSetDevice, i);
+
+        my_float_t** addr;
+        CHECK_CUDA(cudaGetSymbolAddress<decltype(state_data_device_list_constmem)>, (void**)&addr, state_data_device_list_constmem);
+
+        state_data_device_list_constmem_addr[i] = (my_float_t**)addr;
 
     }
 
@@ -295,7 +315,8 @@ int main() {
     memcpy(state_data_host_2, state_data_host, num_states * sizeof(*state_data_host_2));
 
     // std::vector<my_float_t*> state_data_device_list(num_gpus);
-    my_complex_t* state_data_device_list[max_num_gpus];
+    // my_complex_t* state_data_device_list[max_num_gpus];
+    std::vector<my_complex_t*> state_data_device_list(num_gpus);
     std::vector<decltype(Defer(cudaFree, (void*)0))> defer_free_device_mem(num_gpus);
 
     for(int i=0; i<num_gpus; i++) {
@@ -310,6 +331,12 @@ int main() {
         CHECK_CUDA(cudaMemcpyAsync, state_data_device, &state_data_host[num_states_local * i], num_states_local * sizeof(*state_data_device), cudaMemcpyHostToDevice, stream[i]);
         defer_free_device_mem[i] = {cudaFree, (void*)state_data_device};
 
+    }
+
+    for(int i=0; i<num_gpus; i++) {
+        int const gpu_i = gpu_list[i];
+        CHECK_CUDA(cudaSetDevice, gpu_i);
+        CHECK_CUDA(cudaMemcpyAsync, state_data_device_list_constmem_addr[i], &state_data_device_list[0], state_data_device_list.size() * sizeof(state_data_device_list[0]), cudaMemcpyHostToDevice, stream[i]);
     }
 
     for(int i=0; i<gpu_list_dedup.size(); i++) {
@@ -357,7 +384,7 @@ int main() {
                 int const gpu_i = gpu_list[i]; 
                 CHECK_CUDA(cudaSetDevice, gpu_i);
 
-                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num, &state_data_device_list[0]);
+                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num, 0);
 
             }
 
