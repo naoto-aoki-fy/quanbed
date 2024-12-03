@@ -112,8 +112,8 @@ private:
 class hadamard { public:
     static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data) {
 
-        int64_t const lower_mask = (((int64_t)1)<<target_qubit_num) - (int64_t)1;
-        int64_t const split_mask = (((int64_t)1)<<((int64_t)(num_qubits - log_num_split_areas))) - (int64_t)1;
+        uint64_t const lower_mask = (((uint64_t)1)<<target_qubit_num) - (uint64_t)1;
+        uint64_t const split_mask = (((uint64_t)1)<<((uint64_t)(num_qubits - log_num_split_areas))) - (uint64_t)1;
 
         int64_t const index_state_lower = thread_num & lower_mask;
         int64_t const index_state_higher = (thread_num & ~lower_mask) << ((int64_t)1);
