@@ -112,14 +112,7 @@ private:
 };
 
 class hadamard { public:
-    static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data_arg) {
-
-        #ifdef __CUDA_ARCH__
-            my_complex_t** const state_data = state_data_device_list_constmem;
-            // todo: 'const' not applicable. nvcc bug?
-        #else
-            my_complex_t** const state_data = state_data_arg;
-        #endif
+    static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data) {
 
         uint64_t const lower_mask = (((uint64_t)1)<<target_qubit_num) - (uint64_t)1;
         uint64_t const split_mask = (((uint64_t)1)<<((uint64_t)(num_qubits - log_num_split_areas))) - (uint64_t)1;
@@ -147,12 +140,12 @@ class hadamard { public:
 };
 
 template<class Gate>
-__global__ void cuda_gate(int const num_split_areas, int const log_num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t**) {
+__global__ void cuda_gate(int const num_split_areas, int const log_num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num) {
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
     int64_t const num_threads_local = ((int64_t)1) << (num_qubits_local-1);
 
     int64_t const thread_num = threadIdx.x + blockIdx.x * blockDim.x + num_threads_local * split_num;
-    Gate::apply(num_split_areas, log_num_split_areas, thread_num, num_qubits, target_qubit_num, 0);
+    Gate::apply(num_split_areas, log_num_split_areas, thread_num, num_qubits, target_qubit_num, state_data_device_list_constmem);
 }
 
 template<class Gate>
@@ -185,7 +178,7 @@ int main() {
     int const num_omp_threads = 1 << log_num_omp_threads;
     omp_set_num_threads(num_omp_threads);
 
-    int const num_qubits = 24;
+    int const num_qubits = 32;
     int const log_block_size = 8;
 
     fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
@@ -384,7 +377,7 @@ int main() {
                 int const gpu_i = gpu_list[i]; 
                 CHECK_CUDA(cudaSetDevice, gpu_i);
 
-                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num, 0);
+                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num);
 
             }
 
