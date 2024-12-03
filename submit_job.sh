@@ -21,8 +21,7 @@ JOBNAME="${DATENOW}"
 
 OUTPUT_FN="output_${DATENOW}"
 
-TIMELIMIT_SEC=$((1*60*60))
-TIMELIMIT_STR=$(date -u -d @"$TIMELIMIT_SEC" +"%H:%M:%S")
+TIMELIMIT_MIN=$((1*60))
 
 cat <<EOF > "${JOB_FN}"
 #!/bin/bash
@@ -33,7 +32,9 @@ cat <<EOF > "${JOB_FN}"
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH -t ${TIMELIMIT_STR}
+#SBATCH -t ${TIMELIMIT_MIN}
+#SBATCH --signal=SIGINT@120
+#SBATCH --signal=SIGTERM@60
 
 # declare -p | grep -E '^declare -x' 1>&2
 python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"SLURM\")}));" 1>&2
@@ -42,9 +43,9 @@ module load system/${JOB_PARTITION} nvhpc
 
 set -xe
 
-nvcc -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
+nvcc -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
 
-timeout -k 60 -s INT $((${TIMELIMIT_SEC}-60*5)) ./"${EXE_FN}"
+./"${EXE_FN}"
 
 echo "[info] the end of job card" 1>&2
 EOF

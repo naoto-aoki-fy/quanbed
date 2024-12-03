@@ -115,7 +115,7 @@ class hadamard { public:
     static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data_arg) {
 
         #ifdef __CUDA_ARCH__
-            my_complex_t** state_data = state_data_device_list_constmem;
+            my_complex_t** const state_data = state_data_device_list_constmem;
             // todo: 'const' not applicable. nvcc bug?
         #else
             my_complex_t** const state_data = state_data_arg;
