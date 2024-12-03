@@ -15,8 +15,13 @@
 
 #include <omp.h>
 #include <cuda_runtime.h>
+#include <cuda/std/complex>
 
-__host__ __device__ int log2_int(int arg) {
+#define SQRT2 (1.41421356237309504880168872420969807856967187537694)
+#define INV_SQRT2 (1.0/SQRT2)
+const int max_num_gpus = 8;
+
+int log2_int(int arg) {
     if(arg<=0) return -1;
     int value = 0;
     while(arg>1) {
@@ -26,13 +31,8 @@ __host__ __device__ int log2_int(int arg) {
     return value;
 }
 
-// template<typename INT, int arg> class log2_compile_time { public: static INT const value = 1 + log2_compile_time<INT, arg/2>::value; };
-// template<typename INT> class log2_compile_time<INT, 1> { public: static INT const value = 0; };
-
 typedef double my_float_t;
-
-my_float_t const sqrt2 = 1.41421356237309504880168872420969807856967187537694;
-my_float_t const inv_sqrt2 = 1 / sqrt2;
+typedef cuda::std::complex<my_float_t> my_complex_t;
 
 // 任意のCUDA API関数とその引数を受け取る
 template <typename Func, typename... Args>
@@ -109,12 +109,8 @@ private:
     }
 };
 
-const int max_num_gpus = 8;
-
 class hadamard { public:
-    static __device__ __host__ void apply(int num_split_areas, int64_t thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data) {
-
-        int const log_num_split_areas = log2_int(num_split_areas);
+    static __device__ __host__ void apply(int const num_split_areas, int const log_num_split_areas, int64_t const thread_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data) {
 
         int64_t const lower_mask = (((int64_t)1)<<target_qubit_num) - (int64_t)1;
         int64_t const split_mask = (((int64_t)1)<<((int64_t)(num_qubits - log_num_split_areas))) - (int64_t)1;
@@ -131,36 +127,33 @@ class hadamard { public:
         int64_t const index_state_1_split_num = index_state_1 >> (num_qubits - log_num_split_areas);
         int64_t const index_state_1_split_address = index_state_1 & split_mask;
 
-        my_float_t const amp_state_0 = state_data[index_state_0_split_num][index_state_0_split_address];
-        my_float_t const amp_state_1 = state_data[index_state_1_split_num][index_state_1_split_address];
+        my_complex_t const amp_state_0 = state_data[index_state_0_split_num][index_state_0_split_address];
+        my_complex_t const amp_state_1 = state_data[index_state_1_split_num][index_state_1_split_address];
 
-        state_data[index_state_0_split_num][index_state_0_split_address] = (amp_state_0 + amp_state_1) * inv_sqrt2;
-        state_data[index_state_1_split_num][index_state_1_split_address] = (amp_state_0 - amp_state_1) * inv_sqrt2;
+        state_data[index_state_0_split_num][index_state_0_split_address] = (amp_state_0 + amp_state_1) * INV_SQRT2;
+        state_data[index_state_1_split_num][index_state_1_split_address] = (amp_state_0 - amp_state_1) * INV_SQRT2;
 
     }
 
 };
 
 template<class Gate>
-__global__ void cuda_gate(int const num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t* state_data[max_num_gpus]) {
-    int const log_num_split_areas = log2_int(num_split_areas);
+__global__ void cuda_gate(int const num_split_areas, int const log_num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t* state_data[max_num_gpus]) {
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
     int64_t const num_threads_local = ((int64_t)1) << (num_qubits_local-1);
 
     int64_t const thread_num = threadIdx.x + blockIdx.x * blockDim.x + num_threads_local * split_num;
-    Gate::apply(num_split_areas, thread_num, num_qubits, target_qubit_num, state_data);
+    Gate::apply(num_split_areas, log_num_split_areas, thread_num, num_qubits, target_qubit_num, state_data);
 }
 
 template<class Gate>
-void omp_gate(int const num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_float_t** const state_data) {
-
-    int const log_num_split_areas = log2_int(num_split_areas);
+void omp_gate(int const num_split_areas, int const log_num_split_areas, int64_t const split_num, int64_t const num_qubits, int64_t const target_qubit_num, my_complex_t** const state_data) {
     int64_t const num_qubits_local = num_qubits - log_num_split_areas;
     int64_t const num_threads_local = ((int64_t)1) << (num_qubits_local-1);
 
     for(int64_t thread_num_local = 0; thread_num_local < num_threads_local; thread_num_local++) {
         int64_t thread_num = thread_num_local + num_threads_local * split_num;
-        Gate::apply(num_split_areas, thread_num, num_qubits, target_qubit_num, state_data);
+        Gate::apply(num_split_areas, log_num_split_areas, thread_num, num_qubits, target_qubit_num, state_data);
     }
 }
 
@@ -237,7 +230,7 @@ int main() {
     int64_t const num_states_local_omp = ((int64_t)1) << num_qubits_local_omp;
 
     fprintf(stderr, "[info] cudaMallocHost state_data_host\n");
-    my_float_t* state_data_host;
+    my_complex_t* state_data_host;
     CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host, num_states * sizeof(*state_data_host), 0);
 
     Defer defer_free_state_data_host(cudaFreeHost, (void*)state_data_host);
@@ -262,9 +255,10 @@ int main() {
         for(int64_t state_num = num_states_local_omp * omp_thread_num;
             state_num < num_states_local_omp * (omp_thread_num + 1);
             state_num++) {
-            my_float_t const amp = uni01(mt);
-            state_data_host[state_num] = amp;
-            sum_pow2_local += amp * amp;
+            my_float_t const amp_real = uni01(mt);
+            my_float_t const amp_imag = uni01(mt);
+            state_data_host[state_num] = {amp_real, amp_imag};
+            sum_pow2_local += amp_real * amp_real + amp_imag * amp_imag;
         }
 
         sum_pow2_list[omp_thread_num] = sum_pow2_local;
@@ -296,12 +290,12 @@ int main() {
     }
     fprintf(stderr, "[info] elapsed_rng=%lf\n", elapsed_rng);
 
-    my_float_t* const state_data_host_2 = (my_float_t*)malloc(num_states * sizeof(*state_data_host_2));
+    my_complex_t* const state_data_host_2 = (my_complex_t*)malloc(num_states * sizeof(*state_data_host_2));
     Defer defer_free_state_data_host_2(free, (void*)state_data_host_2);
     memcpy(state_data_host_2, state_data_host, num_states * sizeof(*state_data_host_2));
 
     // std::vector<my_float_t*> state_data_device_list(num_gpus);
-    my_float_t* state_data_device_list[max_num_gpus];
+    my_complex_t* state_data_device_list[max_num_gpus];
     std::vector<decltype(Defer(cudaFree, (void*)0))> defer_free_device_mem(num_gpus);
 
     for(int i=0; i<num_gpus; i++) {
@@ -309,7 +303,7 @@ int main() {
         int const gpu_i = gpu_list[i]; 
         CHECK_CUDA(cudaSetDevice, gpu_i);
 
-        my_float_t* state_data_device;
+        my_complex_t* state_data_device;
         CHECK_CUDA(cudaMalloc<void>, (void**)&state_data_device, num_states_local * sizeof(*state_data_device));
         state_data_device_list[i] = state_data_device;
 
@@ -363,7 +357,7 @@ int main() {
                 int const gpu_i = gpu_list[i]; 
                 CHECK_CUDA(cudaSetDevice, gpu_i);
 
-                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, i, num_qubits, target_qubit_num, &state_data_device_list[0]);
+                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num, &state_data_device_list[0]);
 
             }
 
@@ -403,7 +397,7 @@ int main() {
 
     fprintf(stderr, "[info] cpu_hadamard\n");
 
-    std::vector<my_float_t*> state_data_host_2_split(num_omp_threads);
+    std::vector<my_complex_t*> state_data_host_2_split(num_omp_threads);
     std::vector<decltype(Defer(free, (void*)0))> defer_free_state_data_host_2_split(num_omp_threads);
     std::vector<std::chrono::_V2::system_clock::time_point>
         time_cpu_begin(num_omp_threads),
@@ -416,7 +410,7 @@ int main() {
 
         int const omp_thread_num = omp_get_thread_num();
 
-        my_float_t* const state_data_host_2_split_i = (my_float_t*)malloc(num_states_local_omp * sizeof(*state_data_host_2_split_i));
+        my_complex_t* const state_data_host_2_split_i = (my_complex_t*)malloc(num_states_local_omp * sizeof(*state_data_host_2_split_i));
         state_data_host_2_split[omp_thread_num] = state_data_host_2_split_i;
         defer_free_state_data_host_2_split[omp_thread_num] = {free, state_data_host_2_split_i};
 
@@ -430,7 +424,7 @@ int main() {
 
             for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
 
-                omp_gate<hadamard>(num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
+                omp_gate<hadamard>(num_omp_threads, log_num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
 
                 if (target_qubit_num >= num_qubits - log_num_omp_threads - 1) {
                     #pragma omp barrier
@@ -476,7 +470,7 @@ int main() {
 
     my_float_t max_diff = 0;
     for(int i=0; i<num_states; i++) {
-        my_float_t diff = std::fabs(state_data_host[i] - state_data_host_2[i]);
+        my_float_t diff = cuda::std::abs(state_data_host[i] - state_data_host_2[i]);
         if (diff > max_diff) {
             max_diff = diff;
         }
@@ -485,12 +479,12 @@ int main() {
 
     my_float_t max_rel_diff = 0;
     for(int i=0; i<num_states; i++) {
-        my_float_t const state_data_host_i = state_data_host[i];
-        my_float_t const state_data_host_2_i = state_data_host_2[i];
-        if (state_data_host_i == 0 || state_data_host_2_i == 0) {
+        my_complex_t const state_data_host_i = state_data_host[i];
+        my_complex_t const state_data_host_2_i = state_data_host_2[i];
+        if (state_data_host_i == 0.0 || state_data_host_2_i == 0.0) {
             continue;
         }
-        my_float_t rel_diff = (state_data_host_i!=0)? std::fabs(state_data_host_i / state_data_host_2_i - 1) : std::fabs(state_data_host_2_i / state_data_host_i - 1);
+        my_float_t rel_diff = (state_data_host_i!=0.0)? cuda::std::abs(state_data_host_i / state_data_host_2_i - 1.0) : cuda::std::abs(state_data_host_2_i / state_data_host_i - 1.0);
         if (rel_diff > max_rel_diff) {
             max_rel_diff = rel_diff;
         }
