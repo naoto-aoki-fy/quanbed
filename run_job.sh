@@ -3,7 +3,11 @@
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 OPTARG="-O3"
-JOB_PARTITION="${1}"
+
+HOSTNAME="$(hostname)"
+JOB_PARTITION="${HOSTNAME%%.*}"
+JOB_PARTITION="${JOB_PARTITION%-*}"
+# JOB_PARTITION="${1}"
 
 ORIGINAL_CODE_FN="main.cu"
 
@@ -23,11 +27,14 @@ OUTPUT_STDERR="${OUTPUT_FN}.err"
 
 exec 3>&1 4>&2
 
-exec >"${OUTPUT_FN}.out" 2>"${OUTPUT_FN}.err"
+exec > >(tee "${OUTPUT_STDOUT}" >&3) 2> >(tee "${OUTPUT_STDERR}" >&4)
+# exec >"${OUTPUT_STDOUT}" 2> >(tee "${OUTPUT_STDERR}" >&4)
 
 python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"SLURM\")}));" 1>"${OUTPUT_STDERR}" 1>&2
 
 module load system/${JOB_PARTITION} nvhpc
+
+set +xe
 
 nvcc -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 -Xcompiler -fopenmp -std=c++17 "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
 
