@@ -19,6 +19,7 @@
 
 #define SQRT2 (1.41421356237309504880168872420969807856967187537694)
 #define INV_SQRT2 (1.0/SQRT2)
+
 const int max_num_gpus = 8;
 
 int log2_int(int arg) {
@@ -56,6 +57,7 @@ void check_cuda(char const* const filename_abs, int const lineno, char const* co
     if (err != cudaSuccess)
     {
         fprintf(stderr, "[debug] %s:%d call:%s args:%s error:%s\n", filename, lineno, funcname, args_str.c_str(), cudaGetErrorString(err));
+        exit(1);
     }
 }
 
@@ -167,10 +169,12 @@ int main() {
     int const rng_seed = 12345;
     // std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
     // std::vector<int> gpu_list{0, 1, 2, 3};
+    // std::vector<int> gpu_list{3, 2, 1, 0};
     // std::vector<int> gpu_list{0, 1};
-    std::vector<int> gpu_list{0};
-
+    std::vector<int> gpu_list{2, 3};
+    // std::vector<int> gpu_list{1};
     int const num_gpus = gpu_list.size();
+
     int const log_num_gpus = log2_int(num_gpus);
 
     int const omp_max_threads = omp_get_max_threads();
@@ -178,8 +182,10 @@ int main() {
     int const num_omp_threads = 1 << log_num_omp_threads;
     omp_set_num_threads(num_omp_threads);
 
-    int const num_qubits = 32;
+    int const num_qubits = 31;
     int const log_block_size = 8;
+    int const target_qubit_num_begin = 0;
+    int const target_qubit_num_end = num_qubits;
 
     fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
     fprintf(stderr, "[info] num_gpus=%d (", num_gpus);
@@ -221,16 +227,19 @@ int main() {
 
     }
 
-    std::vector<my_float_t**> state_data_device_list_constmem_addr(num_gpus);
+    std::vector<my_complex_t**> state_data_device_list_constmem_addr(num_gpus);
+    // for(int j=0; j<5; j++) {
     for(int i=0; i<num_gpus; i++) {
-        CHECK_CUDA(cudaSetDevice, i);
+        int const gpu_i = gpu_list[i];
+        CHECK_CUDA(cudaSetDevice, gpu_i);
 
-        my_float_t** addr;
+        my_complex_t** addr;
         CHECK_CUDA(cudaGetSymbolAddress<decltype(state_data_device_list_constmem)>, (void**)&addr, state_data_device_list_constmem);
+        // fprintf(stderr, "[debug] gpu_num=%d addr=%p\n", i, addr);
 
-        state_data_device_list_constmem_addr[i] = (my_float_t**)addr;
-
+        state_data_device_list_constmem_addr[i] = addr;
     }
+    // }
 
     int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
 
@@ -242,11 +251,14 @@ int main() {
     int64_t const num_qubits_local_omp = num_qubits - log_num_omp_threads;
     int64_t const num_states_local_omp = ((int64_t)1) << num_qubits_local_omp;
 
-    fprintf(stderr, "[info] cudaMallocHost state_data_host\n");
     my_complex_t* state_data_host;
-    CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host, num_states * sizeof(*state_data_host), 0);
+    // fprintf(stderr, "[info] cudaMallocHost state_data_host\n");
+    // CHECK_CUDA(cudaMallocHost<void>, (void**)&state_data_host, num_states * sizeof(*state_data_host), 0);
+    // Defer defer_free_state_data_host(cudaFreeHost, (void*)state_data_host);
+    fprintf(stderr, "[info] malloc state_data_host\n");
+    state_data_host = (my_complex_t*)malloc(num_states * sizeof(*state_data_host));
+    Defer defer_free_state_data_host(free, (void*)state_data_host);
 
-    Defer defer_free_state_data_host(cudaFreeHost, (void*)state_data_host);
 
     fprintf(stderr, "[info] generating random state\n");
     my_float_t sum_pow2 = 0;
@@ -307,8 +319,6 @@ int main() {
     Defer defer_free_state_data_host_2(free, (void*)state_data_host_2);
     memcpy(state_data_host_2, state_data_host, num_states * sizeof(*state_data_host_2));
 
-    // std::vector<my_float_t*> state_data_device_list(num_gpus);
-    // my_complex_t* state_data_device_list[max_num_gpus];
     std::vector<my_complex_t*> state_data_device_list(num_gpus);
     std::vector<decltype(Defer(cudaFree, (void*)0))> defer_free_device_mem(num_gpus);
 
@@ -337,7 +347,6 @@ int main() {
         for(int j=0; j<gpu_list_dedup.size(); j++) {
             if(i==j) continue;
             int const gpu_j = gpu_list_dedup[j]; 
-            if (gpu_i == gpu_j) continue;
             CHECK_CUDA(cudaSetDevice, gpu_i);
             CHECK_CUDA(cudaDeviceEnablePeerAccess, gpu_j, 0);
         }
@@ -348,7 +357,6 @@ int main() {
         for(int j=0; j<gpu_list_dedup.size(); j++) {
             if(i==j) continue;
             int const gpu_j = gpu_list_dedup[j]; 
-            if (gpu_i == gpu_j) continue;
             int canAccessPeer;
             CHECK_CUDA(cudaDeviceCanAccessPeer, &canAccessPeer, gpu_i, gpu_j);
             if (!canAccessPeer) {
@@ -370,7 +378,7 @@ int main() {
             CHECK_CUDA(cudaEventRecord, event_1[i], stream[i]);
         }
 
-        for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
+        for(int target_qubit_num = target_qubit_num_begin; target_qubit_num < target_qubit_num_end; target_qubit_num++) {
 
             for(int i = 0; i < num_gpus; i++) {
 
@@ -442,7 +450,7 @@ int main() {
 
             time_cpu_begin[omp_thread_num] = std::chrono::high_resolution_clock::now();
 
-            for(int target_qubit_num = 0; target_qubit_num < num_qubits; target_qubit_num++) {
+            for(int target_qubit_num = target_qubit_num_begin; target_qubit_num < target_qubit_num_end; target_qubit_num++) {
 
                 omp_gate<hadamard>(num_omp_threads, log_num_omp_threads, omp_thread_num, num_qubits, target_qubit_num, &state_data_host_2_split[0]);
 
@@ -504,7 +512,7 @@ int main() {
         if (state_data_host_i == 0.0 || state_data_host_2_i == 0.0) {
             continue;
         }
-        my_float_t rel_diff = (state_data_host_i!=0.0)? cuda::std::abs(state_data_host_i / state_data_host_2_i - 1.0) : cuda::std::abs(state_data_host_2_i / state_data_host_i - 1.0);
+        my_float_t rel_diff = (state_data_host_i!=0.0)? std::fabs(cuda::std::abs(state_data_host_i) / cuda::std::abs(state_data_host_2_i) - 1.0) : std::fabs(cuda::std::abs(state_data_host_2_i) / cuda::std::abs(state_data_host_i) - 1.0);
         if (rel_diff > max_rel_diff) {
             max_rel_diff = rel_diff;
         }
