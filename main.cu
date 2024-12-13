@@ -248,6 +248,17 @@ int main() {
 
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
 
+    int const num_qubits = 31;
+    fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
+
+    std::vector<int> perm_p2l(num_qubits);
+    std::vector<int> perm_l2p(num_qubits);
+
+    for(int qubit_num=0; qubit_num<num_qubits; qubit_num++) {
+        perm_p2l[qubit_num] = qubit_num;
+        perm_l2p[qubit_num] = qubit_num;
+    }
+
     int const num_samples = 128;
     int const rng_seed = 12345;
     // std::vector<int> gpu_list{0, 1, 2, 3, 4, 5, 6, 7};
@@ -257,15 +268,12 @@ int main() {
     std::vector<int> gpu_list{2, 3};
     // std::vector<int> gpu_list{1};
     int const num_gpus = gpu_list.size();
-
     int const log_num_gpus = log2_int(num_gpus);
 
-    int const num_qubits = 31;
     int const log_block_size = 8;
     int const target_qubit_num_begin = 0;
     int const target_qubit_num_end = num_qubits;
 
-    fprintf(stderr, "[info] num_qubits=%d\n", num_qubits);
     fprintf(stderr, "[info] num_gpus=%d (", num_gpus);
     for(int i=0; i<num_gpus; i++) {
         fprintf(stderr, "%d, ", gpu_list[i]);
@@ -391,6 +399,7 @@ int main() {
         CHECK_CUDA(cudaSetDevice, gpu_id);
         CHECK_CURAND(curandCreateGenerator, &rng_device_list[gpu_num], CURAND_RNG_PSEUDO_DEFAULT);
         CHECK_CURAND(curandSetStream, rng_device_list[gpu_num], stream[gpu_num]);
+        CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_list[gpu_num], rng_seed + gpu_num);
     }
 
     fprintf(stderr, "[info] gpu reduce\n");
@@ -423,7 +432,7 @@ int main() {
 
         data_length = num_blocks_reduce;
 
-        while (data_length>1) {
+        while (data_length > 1) {
             if (data_length > block_size) {
                 block_size_reduce = block_size;
                 num_blocks_reduce = data_length >> log_block_size;
@@ -477,6 +486,7 @@ int main() {
 
         CHECK_CUDA(cudaEventRecord, event_2[gpu_num], stream[gpu_num]);
     }
+
     for(int gpu_num=0; gpu_num<num_gpus; gpu_num++) {
         int const gpu_id = gpu_list[gpu_num];
         CHECK_CUDA(cudaSetDevice, gpu_id);
@@ -503,7 +513,6 @@ int main() {
     fprintf(stdout, "%lf\n", elapsed_rng);
 
     fprintf(stderr, "[info] gpu_hadamard\n");
-    fprintf(stdout, "cuda\n");
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
@@ -513,16 +522,18 @@ int main() {
 
         for(int target_qubit_num = target_qubit_num_begin; target_qubit_num < target_qubit_num_end; target_qubit_num++) {
 
+            int const target_qubit_num_physical = perm_l2p[target_qubit_num];
+
             for(int i = 0; i < num_gpus; i++) {
 
                 int const gpu_i = gpu_list[i]; 
                 CHECK_CUDA(cudaSetDevice, gpu_i);
 
-                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num);
+                cuda_gate<hadamard><<<num_blocks, block_size, 0, stream[i]>>>(num_gpus, log_num_gpus, i, num_qubits, target_qubit_num_physical);
 
             }
 
-            if (target_qubit_num >= num_qubits - log_num_gpus) {
+            if (target_qubit_num_physical >= num_qubits - log_num_gpus) {
                 for(int i=0; i<num_gpus; i++) {
                     CHECK_CUDA(cudaStreamSynchronize, stream[i]);
                 }

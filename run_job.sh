@@ -34,8 +34,6 @@ python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.
 
 module load system/${JOB_PARTITION} nvhpc
 
-set +xe
-
 nvcc -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 -Xcompiler -std=c++17 "${OPTARG}" "${CODE_FN}" -lcurand -o "${EXE_FN}"
 
 ./"${EXE_FN}"
