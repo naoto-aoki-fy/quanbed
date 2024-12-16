@@ -19,6 +19,8 @@
 #include <cuda/std/complex>
 #include <nccl.h>
 
+#include "pipe3.hpp"
+
 #define SQRT2 (1.41421356237309504880168872420969807856967187537694)
 #define INV_SQRT2 (1.0/SQRT2)
 
@@ -112,18 +114,11 @@ void check_nccl(char const* const filename_abs, int const lineno, char const* co
 {
     char const* const strrchr_result = strrchr(filename_abs, '/');
     char const* const filename = strrchr_result? strrchr_result + 1 : filename_abs;
-    std::ostringstream oss;
-    // ((oss << args << ", "), ...);
-    std::string args_str = oss.str();
-    // if (!args_str.empty()) {
-    //     args_str.pop_back();
-    //     args_str.pop_back();
-    // }
 
     ncclResult_t err = func(std::forward<Args>(args)...);
     if (err != ncclSuccess)
     {
-        fprintf(stderr, "[debug] %s:%d call:%s args:%s error:%s\n", filename, lineno, funcname, args_str.c_str(), ncclGetErrorString(err));
+        fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, ncclGetErrorString(err));
         exit(1);
     }
 }
@@ -182,7 +177,7 @@ private:
 __global__ void norm_sum_reduce_kernel(my_complex_t const* const input_global, my_float_t* const output_global)
 {
     extern __shared__ my_float_t sum_shared[];
-    int const idx =  blockDim.x * blockIdx.x + threadIdx.x;
+    int64_t const idx =  blockDim.x * blockIdx.x + threadIdx.x;
     sum_shared[threadIdx.x] = cuda::std::norm(input_global[idx]);
 
     my_float_t sum_cached;
@@ -192,8 +187,8 @@ __global__ void norm_sum_reduce_kernel(my_complex_t const* const input_global, m
         active_threads = (active_threads + 1) >> 1;
         __syncthreads();
         if(threadIdx.x < half_active_threads){
-        sum_cached += sum_shared[threadIdx.x + active_threads];
-        sum_shared[threadIdx.x] = sum_cached;
+            sum_cached += sum_shared[threadIdx.x + active_threads];
+            sum_shared[threadIdx.x] = sum_cached;
         }
     }
     if (threadIdx.x == 0) {
@@ -204,7 +199,7 @@ __global__ void norm_sum_reduce_kernel(my_complex_t const* const input_global, m
 __global__ void sum_reduce_kernel(my_float_t const* const input_global, my_float_t* const output_global)
 {
     extern __shared__ my_float_t sum_shared[];
-    int const idx =  blockDim.x * blockIdx.x + threadIdx.x;
+    int64_t const idx =  blockDim.x * blockIdx.x + threadIdx.x;
     sum_shared[threadIdx.x] = input_global[idx];
 
     my_float_t sum_cached;
@@ -214,8 +209,8 @@ __global__ void sum_reduce_kernel(my_float_t const* const input_global, my_float
         active_threads = (active_threads + 1) >> 1;
         __syncthreads();
         if(threadIdx.x < half_active_threads){
-        sum_cached += sum_shared[threadIdx.x + active_threads];
-        sum_shared[threadIdx.x] = sum_cached;
+            sum_cached += sum_shared[threadIdx.x + active_threads];
+            sum_shared[threadIdx.x] = sum_cached;
         }
     }
     if (threadIdx.x == 0) {
@@ -225,7 +220,7 @@ __global__ void sum_reduce_kernel(my_float_t const* const input_global, my_float
 
 __global__ void normalize_kernel(my_float_t* const data_global, my_float_t const factor)
 {
-    int const idx =  blockDim.x * blockIdx.x + threadIdx.x;
+    int64_t const idx = blockDim.x * blockIdx.x + threadIdx.x;
     data_global[idx] *= factor;
 }
 
@@ -258,7 +253,7 @@ __global__ void cuda_gate(int64_t const num_qubits, int64_t const target_qubit_n
 
 int main(int argc, char** argv) {
 
-    float elapsed_ms;
+    float elapsed_ms, elapsed_ms_2;
 
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
 
@@ -273,6 +268,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[info] num_procs=%d\n", num_procs);
     }
 
+    int const gpu_id = proc_num;
+    // int const gpu_id = 0;
+    CHECK_CUDA(cudaSetDevice, gpu_id);
+
     ncclUniqueId nccl_id;
     if (proc_num == 0) {
         CHECK_NCCL(ncclGetUniqueId, &nccl_id);
@@ -283,7 +282,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 31;
+    int const num_qubits = 20;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     uint64_t const swap_buffer_length = UINT64_C(1) << 27;
@@ -296,10 +295,7 @@ int main(int argc, char** argv) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    int const gpu_id = 0; // proc_num;
-    CHECK_CUDA(cudaSetDevice, gpu_id);
-
-    int const num_samples = 128;
+    int const num_samples = 16;
     int const rng_seed = 12345;
 
     int const log_num_procs = log2_int(num_procs);
@@ -323,7 +319,7 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
     decltype(Defer(cudaEventDestroy, event_2)) defer_destroy_event_2(cudaEventDestroy, event_2);
 
-    // int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
+    int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
 
     int const num_qubits_local = num_qubits - log_num_procs;
     int64_t const num_states_local = ((int64_t)1) << ((int64_t)num_qubits_local);
@@ -357,6 +353,16 @@ int main(int argc, char** argv) {
 
     CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local * 2, 0.0, 1.0);
 
+    // CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
+
+    // curandGenerator_t rng_device_2;
+
+    // CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
+    // CHECK_CURAND(curandSetStream, rng_device_2, stream);
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + 1);
+
+    // CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((my_float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
+
     {
         int64_t data_length = num_states_local;
         int64_t num_blocks_reduce;
@@ -389,28 +395,53 @@ int main(int argc, char** argv) {
         }
     }
 
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     my_float_t norm_sum_local;
     CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(my_float_t), cudaMemcpyDeviceToHost, stream);
 
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     CHECK_CUDA(cudaFree, (void*)norm_sum_device);
 
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     CHECK_CUDA(cudaStreamSynchronize, stream);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
     my_float_t norm_sum_global;
     MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
 
     if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
-    my_float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
 
-    normalize_kernel<<<num_blocks*2, block_size, 0, stream>>>((my_float_t*)(void*)state_data_device, normalize_factor);
+    my_float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
+    fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    normalize_kernel<<<1ULL<<(num_qubits_local+1-log_block_size), block_size, 0, stream>>>((my_float_t*)(void*)state_data_device, normalize_factor);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
     CHECK_CUDA(cudaEventRecord, event_2, stream);
 
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     CHECK_CUDA(cudaStreamSynchronize, stream);
 
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-    MPI_Reduce(MPI_IN_PLACE, &elapsed_ms, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+    elapsed_ms = elapsed_ms_2;
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     if(proc_num==0) {
         fprintf(stderr, "[info] rng elapsed=%lf\n", elapsed_ms * 1e-3);
     }
@@ -418,6 +449,8 @@ int main(int argc, char** argv) {
     if (proc_num == 0) { fprintf(stderr, "[info] normalize done\n"); }
 
     if (proc_num == 0) { fprintf(stderr, "[info] gpu_hadamard\n"); }
+
+    MPI_Barrier(MPI_COMM_WORLD);
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
@@ -435,7 +468,7 @@ int main(int argc, char** argv) {
                 for(int64_t swap_area_num = 0; swap_area_num < num_swap_areas; swap_area_num++) {
                     int const fp = (proc_num >> (log_num_procs - num_qubits + target_qubit_num_physical))&1;
 
-                    fprintf(stderr, "[debug] nccl_rank=%d fp=%d\n", nccl_rank, fp);
+                    // fprintf(stderr, "[debug] nccl_rank=%d fp=%d\n", nccl_rank, fp);
 
                     int64_t const swap_area_begin = (2*swap_area_num+((fp)?0:1)) * swap_width;
                     // int64_t const swap_area_end = swap_area_begin + swap_width;
@@ -489,12 +522,117 @@ int main(int argc, char** argv) {
         CHECK_CUDA(cudaStreamSynchronize, stream);
 
         CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-        MPI_Reduce(MPI_IN_PLACE, &elapsed_ms, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+        elapsed_ms = elapsed_ms_2;
         if(proc_num==0) {
             fprintf(stderr, "[info] elapsed_gpu=%f\n", elapsed_ms * 1e-3);
             fprintf(stdout, "%lf\n", elapsed_ms);
         }
 
+    }
+
+    // uint64_t const cksumbuf_data_count = 1ULL < 24;
+    // if(proc_num==0) {
+    //     process cksumproc;
+    //     char* const cksumproc_argv[] = {"openssl", "sha256", NULL};
+    //     if (popen3(&cksumproc, cksumproc_argv, true, false, false) != 0) {
+    //         fprintf(stderr, "[errpr] popen3 failed\n");
+    //         exit(1);
+    //     }
+
+    //     void* cksumbuf = malloc(cksumbuf_data_count * sizeof(my_complex_t));
+    //     decltype(Defer(free, (void*)0)) defer_free_cksum_buffer(free, (void*)cksumbuf);
+
+    //     {
+    //         int64_t data_pos = 0;
+    //         while(true) {
+    //             int64_t cksumbuf_copy_count = cksumbuf_data_count;
+    //             if (cksumbuf_copy_count > num_states_local) { cksumbuf_copy_count = num_states_local; }
+    //             CHECK_CUDA(cudaMemcpyAsync, cksumbuf, &state_data_device[data_pos], cksumbuf_copy_count * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
+    //             CHECK_CUDA(cudaStreamSynchronize, stream);
+    //             fwrite(cksumbuf, 1, cksumbuf_data_count, cksumproc.stdin);
+    //             data_pos += cksumbuf_data_count;
+    //             if(data_pos == num_states_local) { break; }
+    //         }
+    //     }
+    //     for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
+    //         int64_t data_pos = 0;
+    //         while(true) {
+    //             int64_t cksumbuf_copy_count = cksumbuf_data_count;
+    //             if (cksumbuf_copy_count > num_states_local) { cksumbuf_copy_count = num_states_local; }
+    //             // CHECK_NCCL(ncclRecv, cksumbuf, cksumbuf_copy_count * 2, ncclDouble, peer_proc_num, nccl_comm, stream);
+    //             // CHECK_CUDA(cudaStreamSynchronize, stream);
+    //             fwrite(cksumbuf, 1, cksumbuf_data_count, cksumproc.stdin);
+    //             data_pos += cksumbuf_data_count;
+    //             if(data_pos == num_states_local) { break; }
+    //         }
+    //     }
+    //     fclose(cksumproc.stdin);
+
+    //     int cksumproc_status;
+    //     waitpid(cksumproc.pid, &cksumproc_status, 0);
+    //     if (cksumproc_status!=0) {
+    //         fprintf(stderr, "[warn] cksumproc_status=%d\n", cksumproc_status);
+    //     }
+
+    // } else {
+    //     for(int proc_num = 1; proc_num < num_procs; proc_num++) {
+    //         int64_t data_pos = 0;
+    //         while(true) {
+    //             int64_t cksumbuf_copy_count = cksumbuf_data_count;
+    //             if (cksumbuf_copy_count > num_states_local) { cksumbuf_copy_count = num_states_local; }
+    //             CHECK_NCCL(ncclSend, (void*)&state_data_device[data_pos], cksumbuf_copy_count * 2, ncclDouble, 0, nccl_comm, stream);
+    //             CHECK_CUDA(cudaStreamSynchronize, stream);
+    //             data_pos += cksumbuf_data_count;
+    //             if(data_pos == num_states_local) { break; }
+    //         }
+    //     }
+    // }
+
+    if(proc_num==0) {
+        fprintf(stderr, "[info] gathering state data\n");
+
+        process cksumproc;
+        char* const cksumproc_argv[] = {"openssl", "sha256", NULL};
+        if (popen3(&cksumproc, cksumproc_argv, true, false, false) != 0) {
+            fprintf(stderr, "[errpr] popen3 failed\n");
+            exit(1);
+        }
+
+        my_complex_t* state_data_host = (my_complex_t*)malloc(num_states * sizeof(my_complex_t));
+        decltype(Defer(free, (void*)0)) defer_free_state_data_host(free, (void*)state_data_host);
+
+        CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
+        for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
+            MPI_Status mpi_status;
+            MPI_Recv(&state_data_host[peer_proc_num * num_states_local], num_states_local * 2, MPI_DOUBLE, peer_proc_num, 0, MPI_COMM_WORLD, &mpi_status);
+        }
+        CHECK_CUDA(cudaStreamSynchronize, stream);
+
+        for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
+            int64_t state_num_physical = 0;
+            for(int qubit_num_logical = 0; qubit_num_logical < num_qubits; qubit_num_logical++) {
+                int qubit_num_physical = perm_l2p[qubit_num_logical];
+                state_num_physical = state_num_physical | (((state_num_logical >> qubit_num_logical) & 1) << qubit_num_physical);
+            }
+            fwrite(&state_data_host[state_num_physical], sizeof(my_complex_t), 1, cksumproc.stdin);
+        }
+        // for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
+        //     int64_t state_num_physical = state_num_logical;
+        //     fwrite(&state_data_host[state_num_physical], sizeof(my_complex_t), 1, cksumproc.stdin);
+        // }
+        fclose(cksumproc.stdin);
+
+        int cksumproc_status;
+        waitpid(cksumproc.pid, &cksumproc_status, 0);
+        if (cksumproc_status!=0) {
+            fprintf(stderr, "[warn] cksumproc_status=%d\n", cksumproc_status);
+        }
+
+    } else {
+        for(int proc_num = 1; proc_num < num_procs; proc_num++) {
+            MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+        }
     }
 
     MPI_Finalize();

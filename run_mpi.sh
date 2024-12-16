@@ -36,10 +36,11 @@ module load system/${JOB_PARTITION} nvhpc
 
 set -e
 
-mpicxx -std=c++17 "${OPTARG}" "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
+mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
-export NCCL_DEBUG=WARN
-mpirun ./"${EXE_FN}"
+# export NCCL_DEBUG=TRACE
+mpirun --oversubscribe -np 8 ./"${EXE_FN}"
+# mpirun -np 1 ./"${EXE_FN}"
 
 echo "[info] the end of job card" 1>&2
 
