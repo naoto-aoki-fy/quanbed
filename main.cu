@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 20;
+    int const num_qubits = 14;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     uint64_t const swap_buffer_length = UINT64_C(1) << 27;
@@ -474,7 +474,7 @@ int main(int argc, char** argv) {
                     // int64_t const swap_area_end = swap_area_begin + swap_width;
                     int const peer_gpu_num = (proc_num + ((fp)?1:-1) * (UINT64_C(1)<< (target_qubit_num_physical + log_num_procs - num_qubits)) + num_procs) & (num_procs-1);
 
-                    fprintf(stderr, "[debug] nccl_rank=%d peer_gpu_num=%d\n", nccl_rank, peer_gpu_num);
+                    // fprintf(stderr, "[debug] nccl_rank=%d peer_gpu_num=%d\n", nccl_rank, peer_gpu_num);
 
                     int64_t swap_area_dispos = 0;
                     while (true) {
@@ -621,18 +621,27 @@ int main(int argc, char** argv) {
         //     int64_t state_num_physical = state_num_logical;
         //     fwrite(&state_data_host[state_num_physical], sizeof(my_complex_t), 1, cksumproc.stdin);
         // }
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
         fclose(cksumproc.stdin);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
         int cksumproc_status;
         waitpid(cksumproc.pid, &cksumproc_status, 0);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
         if (cksumproc_status!=0) {
             fprintf(stderr, "[warn] cksumproc_status=%d\n", cksumproc_status);
         }
 
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
     } else {
-        for(int proc_num = 1; proc_num < num_procs; proc_num++) {
-            MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-        }
+        // for(int proc_num = 1; proc_num < num_procs; proc_num++) {
+        MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+        // }
     }
 
     MPI_Finalize();
