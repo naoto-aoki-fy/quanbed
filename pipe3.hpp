@@ -13,7 +13,7 @@ typedef struct {
 } process;
 
 // The popen3 function now takes flags for each stream to control whether to pipe them
-int popen3(process* process_obj, char* const* argv, bool pipe_stdin, bool pipe_stdout, bool pipe_stderr) {
+int popen3(process* process_obj, char const* const* argv, bool pipe_stdin, bool pipe_stdout, bool pipe_stderr) {
     int pipe_stdin_fd[2], pipe_stdout_fd[2], pipe_stderr_fd[2];
 
     // Conditionally create pipes based on the flags
@@ -75,8 +75,18 @@ int popen3(process* process_obj, char* const* argv, bool pipe_stdin, bool pipe_s
             ::close(pipe_stderr_fd[1]);
         }
 
+        // int argc;
+        // for (argc = 0; ; argc++) {
+        //     if (argv[argc] == NULL) { break; }
+        // }
+        // char** const argv_copy = (char**)malloc((argc+1)*sizeof(char*));
+        // for (int i=0; i<argc; i++) {
+        //     argv_copy = strdup(argv[i]);
+        // }
+        // argv_copy[argc] = NULL;
+
         // Execute the command
-        if (execvp(argv[0], argv) < 0) {
+        if (execvp(argv[0], (char**)(void*)argv) < 0) {
             // Close the pipes and return failure if execvp fails
             if (pipe_stdin) {
                 ::close(pipe_stdin_fd[0]);
