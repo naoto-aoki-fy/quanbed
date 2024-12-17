@@ -38,6 +38,18 @@ set -e
 
 mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
+# mpicxx_output=$(mpicxx -show)
+# linker_options=$(<<< "$mpicxx_output" grep -oP '(?<=-Wl,)[^ ]+' | sed 's/^/-Xlinker /' | tr '\n' ' ')
+# non_wl_options=$(<<< "$mpicxx_output" tr ' ' '\n' | grep -Ev '^(nvc\+\+|-pthread|-Wl,)' | tr '\n' ' ')
+
+# nvcc \
+# -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi/opal/mca/hwloc/hwloc201/hwloc/include -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi/opal/mca/event/libevent2022/libevent -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi/opal/mca/event/libevent2022/libevent/include -L/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/lib \
+#   -Xlinker -rpath -Xlinker /opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/lib \
+#   -Xlinker --enable-new-dtags \
+#   -lmpi \
+#   -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 \
+#   -std=c++17 ${OPTARG} "${CODE_FN}" -lcurand -lnccl -o "${EXE_FN}"
+
 # export NCCL_DEBUG=TRACE
 mpirun --oversubscribe -np 8 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"

@@ -239,7 +239,7 @@ class hadamard { public:
         my_complex_t const amp_state_1 = state_data_device[index_state_1];
 
         state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
-        state_data_device[index_state_0] = (amp_state_0 - amp_state_1) * INV_SQRT2;
+        state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
 
     }
 
@@ -295,13 +295,14 @@ int main(int argc, char** argv) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    int const num_samples = 16;
+    int const num_samples = 32;
     int const rng_seed = 12345;
 
     int const log_num_procs = log2_int(num_procs);
 
     int const log_block_size = 8;
     int const target_qubit_num_begin = 0;
+    // int const target_qubit_num_end = 0;
     int const target_qubit_num_end = num_qubits;
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size=%d\n", log_block_size); }
@@ -345,20 +346,22 @@ int main(int argc, char** argv) {
 
     CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
     CHECK_CURAND(curandSetStream, rng_device, stream);
-    CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
 
     if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); } 
     CHECK_CUDA(cudaEventRecord, event_1, stream);
 
+    CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
     CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local * 2, 0.0, 1.0);
 
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
     // CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
 
     // curandGenerator_t rng_device_2;
 
     // CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
     // CHECK_CURAND(curandSetStream, rng_device_2, stream);
-    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + 1);
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + proc_num * 2 + 1);
 
     // CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((my_float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
 
@@ -456,22 +459,26 @@ int main(int argc, char** argv) {
         for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++) {
 
             int target_qubit_num_physical = perm_l2p[target_qubit_num_logical];
+            // if(proc_num==0) fprintf(stderr, "[debug] target_qubit_num_logical=%d target_qubit_num_physical=%d\n", target_qubit_num_logical, target_qubit_num_physical);
+            // MPI_Barrier(MPI_COMM_WORLD);
 
             /* target qubits is global */
             if (target_qubit_num_physical >= num_qubits - log_num_procs) {
                 int64_t const swap_width = UINT64_C(1)<<(target_qubit_num_physical - log_num_procs);
                 int64_t const num_swap_areas = UINT64_C(1)<<(num_qubits - target_qubit_num_physical - 1);
                 // int64_t const pow2_nt_lnp = UINT64_C(1)<<(target_qubit_num_physical - log_num_procs);
+
+                int const fp = (proc_num >> (log_num_procs - num_qubits + target_qubit_num_physical)) & 1;
+                int const peer_gpu_num = (proc_num + ((fp)?-1:1) * (UINT64_C(1)<< (target_qubit_num_physical + log_num_procs - num_qubits)) + num_procs) & (num_procs-1);
+
+                // fprintf(stderr, "[debug] nccl_rank=%d peer_gpu_num=%d\n", nccl_rank, peer_gpu_num);
+
                 for(int64_t swap_area_num = 0; swap_area_num < num_swap_areas; swap_area_num++) {
-                    int const fp = (proc_num >> (log_num_procs - num_qubits + target_qubit_num_physical))&1;
 
                     // fprintf(stderr, "[debug] nccl_rank=%d fp=%d\n", nccl_rank, fp);
 
                     int64_t const swap_area_begin = (2*swap_area_num+((fp)?0:1)) * swap_width;
                     // int64_t const swap_area_end = swap_area_begin + swap_width;
-                    int const peer_gpu_num = (proc_num + ((fp)?1:-1) * (UINT64_C(1)<< (target_qubit_num_physical + log_num_procs - num_qubits)) + num_procs) & (num_procs-1);
-
-                    // fprintf(stderr, "[debug] nccl_rank=%d peer_gpu_num=%d\n", nccl_rank, peer_gpu_num);
 
                     int64_t swap_area_dispos = 0;
                     while (true) {
