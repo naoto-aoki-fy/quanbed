@@ -1,12 +1,14 @@
 #!/bin/bash
 
+set -e
+
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 OPTARG="-O3"
 
-HOSTNAME="$(hostname)"
-JOB_PARTITION="${HOSTNAME%%.*}"
-JOB_PARTITION="${JOB_PARTITION%-*}"
+HOSTNAME_FQDN="$(hostname)"
+HOSTNAME="${HOSTNAME_FQDN%%.*}"
+JOB_PARTITION="${HOSTNAME%-*}"
 # JOB_PARTITION="${1}"
 
 ORIGINAL_CODE_FN="${1:-"main.cu"}"
@@ -34,25 +36,42 @@ python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.
 
 module load system/${JOB_PARTITION} nvhpc
 
-set -e
+echo "[info] getting mpicxx params" 1>&2
+mpicxx_output=$(mpicxx -show)
 
-mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
+for word in $mpicxx_output; do
+    case $word in
+        # 除外条件
+        nvc++|*-pthread) 
+            continue ;;  # スキップ
+        # -Wl,で始まる場合は-Xlinkerに変換
+        -Wl,*) 
+            IFS=',' read -ra parts <<< "$word"
+            for part in "${parts[@]:1}"; do  # 最初の -Wl, をスキップ
+                nvcc_options+="-Xlinker $part "
+            done
+            ;;
+        # その他はそのまま追加
+        *) 
+            nvcc_options+="$word " ;;
+    esac
+done
 
-# mpicxx_output=$(mpicxx -show)
-# linker_options=$(<<< "$mpicxx_output" grep -oP '(?<=-Wl,)[^ ]+' | sed 's/^/-Xlinker /' | tr '\n' ' ')
-# non_wl_options=$(<<< "$mpicxx_output" tr ' ' '\n' | grep -Ev '^(nvc\+\+|-pthread|-Wl,)' | tr '\n' ' ')
+set -x
+nvcc \
+  $nvcc_options \
+  -gencode=arch=compute_80,code=sm_80 \
+  -gencode=arch=compute_90,code=sm_90 \
+  -std=c++17 ${OPTARG} "${CODE_FN}" -lcurand -lnccl -o "${EXE_FN}"
 
-# nvcc \
-# -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi/opal/mca/hwloc/hwloc201/hwloc/include -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi/opal/mca/event/libevent2022/libevent -I/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/include/openmpi/opal/mca/event/libevent2022/libevent/include -L/opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/lib \
-#   -Xlinker -rpath -Xlinker /opt/nvidia/hpc_sdk/Linux_x86_64/24.9/comm_libs/12.6/hpcx/hpcx-2.20/ompi/lib \
-#   -Xlinker --enable-new-dtags \
-#   -lmpi \
-#   -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 \
-#   -std=c++17 ${OPTARG} "${CODE_FN}" -lcurand -lnccl -o "${EXE_FN}"
+# mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
 # export NCCL_DEBUG=TRACE
 mpirun --oversubscribe -np 8 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
+
+set +x
+set +e
 
 echo "[info] the end of job card" 1>&2
 
