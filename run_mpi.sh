@@ -37,9 +37,15 @@ python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.
 module load system/${JOB_PARTITION} nvhpc
 
 echo "[info] getting mpicxx params" 1>&2
-mpicxx_output=$(mpicxx -show)
 
-for word in $mpicxx_output; do
+# `mpicxx -show` の出力を配列として取得
+read -r -a mpicxx_output < <(mpicxx -show)
+
+# nvcc用のオプションを格納する配列
+nvcc_options=()
+
+# 配列をループして処理
+for word in "${mpicxx_output[@]}"; do
     case $word in
         # 除外条件
         nvc++|*-pthread) 
@@ -48,18 +54,18 @@ for word in $mpicxx_output; do
         -Wl,*) 
             IFS=',' read -ra parts <<< "$word"
             for part in "${parts[@]:1}"; do  # 最初の -Wl, をスキップ
-                nvcc_options+="-Xlinker $part "
+                nvcc_options+=("-Xlinker" "$part")  # 配列に追加
             done
             ;;
         # その他はそのまま追加
         *) 
-            nvcc_options+="$word " ;;
+            nvcc_options+=("$word") ;;  # 配列に追加
     esac
 done
 
 set -x
 nvcc \
-  $nvcc_options \
+  "${nvcc_options[@]}" \
   -gencode=arch=compute_80,code=sm_80 \
   -gencode=arch=compute_90,code=sm_90 \
   -std=c++17 ${OPTARG} "${CODE_FN}" -lcurand -lnccl -o "${EXE_FN}"
