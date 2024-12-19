@@ -25,9 +25,9 @@
 #define INV_SQRT2 (1.0/SQRT2)
 
 int log2_int(int arg) {
-    if(arg<=0) return -1;
+    if (arg <= 0) return -1;
     int value = 0;
-    while(arg>1) {
+    while (arg > 1) {
         value += 1;
         arg = arg >> 1;
     }
@@ -62,7 +62,7 @@ void check_cuda(char const* const filename_abs, int const lineno, char const* co
 }
 
 // マクロで簡単に呼び出せるようにラップ
-#define CHECK_CUDA(func, ...) check_cuda(__FILE__, __LINE__, #func, func, __VA_ARGS__)
+#define CHECK_CUDA(...) check_cuda(__FILE__, __LINE__, #__VA_ARGS__, __VA_ARGS__)
 
 #define CASE_RETURN(code) case code: return #code
 
@@ -106,7 +106,7 @@ void check_curand(char const* const filename_abs, int const lineno, char const* 
     }
 }
 
-#define CHECK_CURAND(func, ...) check_curand(__FILE__, __LINE__, #func, func, __VA_ARGS__)
+#define CHECK_CURAND(...) check_curand(__FILE__, __LINE__, #__VA_ARGS__, __VA_ARGS__)
 
 
 template <typename Func, typename... Args>
@@ -123,7 +123,7 @@ void check_nccl(char const* const filename_abs, int const lineno, char const* co
     }
 }
 
-#define CHECK_NCCL(func, ...) check_nccl(__FILE__, __LINE__, #func, func, __VA_ARGS__)
+#define CHECK_NCCL(...) check_nccl(__FILE__, __LINE__, #__VA_ARGS__, __VA_ARGS__)
 
 // 可変長引数を取る関数ポインタをラップするテンプレート
 template <typename Func, typename... Args>
@@ -490,11 +490,15 @@ int main(int argc, char** argv) {
 
                         /* implement swap here*/
                         if (fp) {
+                            CHECK_NCCL(ncclGroupStart);
                             CHECK_NCCL(ncclSend, (void*)&state_data_device[swap_area_pos], swap_length*2, ncclDouble, peer_gpu_num, nccl_comm, stream);
                             CHECK_NCCL(ncclRecv, (void*)swap_buffer, swap_length * 2, ncclDouble, peer_gpu_num, nccl_comm, stream);
+                            CHECK_NCCL(ncclGroupEnd);
                         } else {
+                            CHECK_NCCL(ncclGroupStart);
                             CHECK_NCCL(ncclRecv, (void*)swap_buffer, swap_length * 2, ncclDouble, peer_gpu_num, nccl_comm, stream);
                             CHECK_NCCL(ncclSend, (void*)&state_data_device[swap_area_pos], swap_length*2, ncclDouble, peer_gpu_num, nccl_comm, stream);
+                            CHECK_NCCL(ncclGroupEnd);
                         }
                         CHECK_CUDA(cudaMemcpyAsync, (void*)&state_data_device[swap_area_pos], (void*)swap_buffer, swap_length*sizeof(my_complex_t), cudaMemcpyDeviceToDevice, stream);
 
