@@ -12,6 +12,7 @@
 #include <random>
 #include <utility>
 #include <unordered_set>
+#include <string_view>
 
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -24,45 +25,53 @@
 #define SQRT2 (1.41421356237309504880168872420969807856967187537694)
 #define INV_SQRT2 (1.0/SQRT2)
 
-int log2_int(int arg) {
-    if (arg <= 0) return -1;
-    int value = 0;
-    while (arg > 1) {
-        value += 1;
-        arg = arg >> 1;
-    }
-    return value;
+unsigned int log2_int(unsigned int arg) {
+    return sizeof(unsigned int) * CHAR_BIT - __builtin_clz(arg) - 1;
 }
+unsigned int log2_int(int arg) {
+    return log2_int((unsigned int)arg);
+}
+
+#if UINT_MAX != ULONG_MAX
+// #if sizeof(unsigned int) != sizeof(unsigned long)
+unsigned int log2_int(unsigned long arg) {
+    return sizeof(unsigned long) * CHAR_BIT - __builtin_clzl(arg) - 1;
+}
+unsigned int log2_int(long arg) {
+    return log2_int((unsigned long)arg);
+}
+#endif
+
+#if ULONG_MAX != ULLONG_MAX
+// #if sizeof(unsigned long) != sizeof(unsigned long long)
+unsigned int log2_int(unsigned long long arg) {
+    return sizeof(unsigned long long) * CHAR_BIT - __builtin_clzll(arg) - 1;
+}
+unsigned int log2_int(long long arg) {
+    return log2_int((unsigned long long)arg);
+}
+#endif
 
 typedef double my_float_t;
 typedef cuda::std::complex<my_float_t> my_complex_t;
 
-// 任意のCUDA API関数とその引数を受け取る
-template <typename Func, typename... Args>
-void check_cuda(char const* const filename_abs, int const lineno, char const* const funcname, Func func, Args&&... args)
-{
-    char const* const strrchr_result = strrchr(filename_abs, '/');
-    char const* const filename = strrchr_result? strrchr_result + 1 : filename_abs;
-    // 引数を文字列化するためのostringstream
-    std::ostringstream oss;
-    ((oss << args << ", "), ...);  // C++17の折り返し式を使って引数を順番に追加
-    std::string args_str = oss.str();
-    if (!args_str.empty()) {
-        args_str.pop_back();  // 最後の", "を削除
-        args_str.pop_back();
-    }
+constexpr const char* get_filename(const char* filename_abs) {
+    size_t const pos = std::string_view(filename_abs).rfind("/");
+    return (pos != std::string_view::npos) ? &filename_abs[pos+1] : filename_abs;
+}
 
-    // 実際にCUDA関数を呼び出し
-    cudaError_t err = func(std::forward<Args>(args)...);
+template <typename Func>
+void check_cuda(char const* const filename, int const lineno, char const* const funcname, Func func)
+{
+    auto err = func();
     if (err != cudaSuccess)
     {
-        fprintf(stderr, "[debug] %s:%d call:%s args:%s error:%s\n", filename, lineno, funcname, args_str.c_str(), cudaGetErrorString(err));
+        fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, cudaGetErrorString(err));
         exit(1);
     }
 }
 
-// マクロで簡単に呼び出せるようにラップ
-#define CHECK_CUDA(...) check_cuda(__FILE__, __LINE__, #__VA_ARGS__, __VA_ARGS__)
+#define CHECK_CUDA(func, ...) check_cuda(get_filename(__FILE__), __LINE__, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
 
 #define CASE_RETURN(code) case code: return #code
 
@@ -85,37 +94,23 @@ static const char *curandGetErrorString(curandStatus_t error) {
     return "<unknown>";
 }
 
-template <typename Func, typename... Args>
-void check_curand(char const* const filename_abs, int const lineno, char const* const funcname, Func func, Args&&... args)
+template <typename Func>
+void check_curand(char const* const filename, int const lineno, char const* const funcname, Func func)
 {
-    char const* const strrchr_result = strrchr(filename_abs, '/');
-    char const* const filename = strrchr_result? strrchr_result + 1 : filename_abs;
-    std::ostringstream oss;
-    ((oss << args << ", "), ...);
-    std::string args_str = oss.str();
-    if (!args_str.empty()) {
-        args_str.pop_back();
-        args_str.pop_back();
-    }
-
-    curandStatus_t err = func(std::forward<Args>(args)...);
+    auto err = func();
     if (err != CURAND_STATUS_SUCCESS)
     {
-        fprintf(stderr, "[debug] %s:%d call:%s args:%s error:%s\n", filename, lineno, funcname, args_str.c_str(), curandGetErrorString(err));
+        fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, curandGetErrorString(err));
         exit(1);
     }
 }
 
-#define CHECK_CURAND(...) check_curand(__FILE__, __LINE__, #__VA_ARGS__, __VA_ARGS__)
+#define CHECK_CURAND(func, ...) check_curand(get_filename(__FILE__), __LINE__, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
 
-
-template <typename Func, typename... Args>
-void check_nccl(char const* const filename_abs, int const lineno, char const* const funcname, Func func, Args&&... args)
+template <typename Func>
+void check_nccl(char const* const filename, int const lineno, char const* const funcname, Func func)
 {
-    char const* const strrchr_result = strrchr(filename_abs, '/');
-    char const* const filename = strrchr_result? strrchr_result + 1 : filename_abs;
-
-    ncclResult_t err = func(std::forward<Args>(args)...);
+    auto err = func();
     if (err != ncclSuccess)
     {
         fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, ncclGetErrorString(err));
@@ -123,56 +118,24 @@ void check_nccl(char const* const filename_abs, int const lineno, char const* co
     }
 }
 
-#define CHECK_NCCL(...) check_nccl(__FILE__, __LINE__, #__VA_ARGS__, __VA_ARGS__)
+#define CHECK_NCCL(func, ...) check_nccl(get_filename(__FILE__), __LINE__, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
 
-// 可変長引数を取る関数ポインタをラップするテンプレート
-template <typename Func, typename... Args>
+template <typename Func>
 class Defer {
 public:
-    // デフォルトコンストラクタ
-    Defer() : valid_(false) {}
-
-    // コンストラクタで関数ポインタと引数を受け取る
-    Defer(Func func, Args... args)
-        : func_(func), args_(args...), valid_(true) {}
-
-    // ムーブ代入演算子
-    Defer& operator=(Defer&& other) noexcept {
-        if (this != &other) {
-            func_ = other.func_;
-            args_ = other.args_;
-            valid_ = other.valid_;
-            other.valid_ = false;
-        }
-        return *this;
-    }
-
-    // ムーブコンストラクタ
-    Defer(Defer&& other) noexcept
-        : func_(other.func_), args_(other.args_), valid_(other.valid_) {
-        other.valid_ = false;
-    }
-
-    // デストラクタで関数ポインタを呼び出す
-    ~Defer() {
-        if (valid_) {
-            call(std::index_sequence_for<Args...>{});
-        }
-    }
-
+    Defer(Func func) : func_(func) {}
+    ~Defer() { this->func_(); }
 private:
-    // 関数ポインタ
     Func func_;
-    // 関数の引数（可変長引数をタプルで保持）
-    std::tuple<Args...> args_;
-    bool valid_;
-
-    // 引数を展開して関数を呼び出す
-    template <std::size_t... I>
-    void call(std::index_sequence<I...>) {
-        func_(std::get<I>(args_)...);
-    }
 };
+
+#define CONCAT(a, b) CONCAT_INNER(a, b)
+#define CONCAT_INNER(a, b) a ## b
+#define UNIQUE_NAME(base) CONCAT(base, __LINE__)
+
+#define DEFER_CHECK_CUDA(func, ...) Defer UNIQUE_NAME(defer_)([&](){ CHECK_CUDA(func, __VA_ARGS__);})
+
+#define DEFER_CODE(code) Defer UNIQUE_NAME(defer_)([&]()code)
 
 __global__ void norm_sum_reduce_kernel(my_complex_t const* const input_global, my_float_t* const output_global)
 {
@@ -242,7 +205,6 @@ class hadamard { public:
         state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
 
     }
-
 };
 
 template<class Gate>
@@ -282,7 +244,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 36;
+    int const num_qubits = 24;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     uint64_t const swap_buffer_length = UINT64_C(1) << 27;
@@ -312,13 +274,13 @@ int main(int argc, char** argv) {
     cudaEvent_t event_2;
 
     CHECK_CUDA(cudaStreamCreate, &stream);
-    decltype(Defer(cudaStreamDestroy, stream)) defer_destroy_stream(cudaStreamDestroy, stream);
+    DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
 
     CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
-    decltype(Defer(cudaEventDestroy, event_1)) defer_destroy_event_1(cudaEventDestroy, event_1);
+    DEFER_CHECK_CUDA(cudaEventDestroy, event_1);
 
     CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
-    decltype(Defer(cudaEventDestroy, event_2)) defer_destroy_event_2(cudaEventDestroy, event_2);
+    DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
 
     int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
 
@@ -330,16 +292,16 @@ int main(int argc, char** argv) {
     if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
     my_complex_t* state_data_device;
-    CHECK_CUDA(cudaMalloc<void>, (void**)&state_data_device, num_states_local * sizeof(*state_data_device));
-    decltype(Defer(cudaFree, (void*)0)) defer_free_state_data(cudaFree, (void*)state_data_device);
+    CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
+    DEFER_CHECK_CUDA(cudaFree, state_data_device);
 
     my_complex_t* swap_buffer;
-    CHECK_CUDA(cudaMalloc<void>, (void**)&swap_buffer, swap_buffer_length * sizeof(my_complex_t));
-    decltype(Defer(cudaFree, (void*)0)) defer_free_swap_buffer(cudaFree, (void*)swap_buffer);
+    CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_length * sizeof(my_complex_t));
+    DEFER_CHECK_CUDA(cudaFree, swap_buffer);
 
     my_float_t* norm_sum_device;
-    CHECK_CUDA(cudaMalloc<void>, (void**)&norm_sum_device, (num_states_local>>log_block_size) * sizeof(my_float_t));
-    decltype(Defer(cudaFree, (void*)0)) defer_free_norm_sum_device(cudaFree, (void*)norm_sum_device);
+    CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size) * sizeof(my_float_t));
+    // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
 
     if (proc_num == 0) { fprintf(stderr, "[info] generating random state\n"); }
     curandGenerator_t rng_device;
@@ -551,7 +513,7 @@ int main(int argc, char** argv) {
             }
 
             my_complex_t* state_data_host = (my_complex_t*)malloc(num_states * sizeof(my_complex_t));
-            decltype(Defer(free, (void*)0)) defer_free_state_data_host(free, (void*)state_data_host);
+            DEFER_CODE({free(state_data_host);});
 
             CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
             for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {

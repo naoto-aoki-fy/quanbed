@@ -18,6 +18,7 @@ PROGRAM_NAME="${ORIGINAL_CODE_FN%.*}_${DATENOW}"
 CODE_FN="${PROGRAM_NAME}.${FN_EXT}"
 EXE_FN="${PROGRAM_NAME}.exe"
 
+cat "${ORIGINAL_CODE_FN}" > /dev/null # work around
 cp "${ORIGINAL_CODE_FN}" "${CODE_FN}"
 
 JOB_FN="job_${DATENOW}.sh"
@@ -73,7 +74,7 @@ nvcc \
 # mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
 # export NCCL_DEBUG=TRACE
-mpirun --oversubscribe -np 8 ./"${EXE_FN}"
+mpirun --oversubscribe -np 2 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 
 set +x
