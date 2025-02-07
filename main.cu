@@ -13,6 +13,7 @@
 #include <utility>
 #include <unordered_set>
 #include <string_view>
+#include <algorithm>
 
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -213,6 +214,7 @@ __global__ void cuda_gate(int64_t const num_qubits, int64_t const target_qubit_n
     Gate::apply(thread_num, num_qubits, target_qubit_num, state_data_device);
 }
 
+
 int main(int argc, char** argv) {
 
     float elapsed_ms, elapsed_ms_2;
@@ -247,7 +249,7 @@ int main(int argc, char** argv) {
     int const num_qubits = 24;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
-    uint64_t const swap_buffer_length = UINT64_C(1) << 27;
+
 
     std::vector<int> perm_p2l(num_qubits);
     std::vector<int> perm_l2p(num_qubits);
@@ -285,6 +287,7 @@ int main(int argc, char** argv) {
     int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
 
     int const num_qubits_local = num_qubits - log_num_procs;
+    
     int64_t const num_states_local = ((int64_t)1) << ((int64_t)num_qubits_local);
     int const block_size = 1 << log_block_size;
     int64_t const num_blocks = ((int64_t)1) << ((int64_t)(num_qubits_local - 1 - log_block_size));
@@ -295,8 +298,10 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
     DEFER_CHECK_CUDA(cudaFree, state_data_device);
 
+    int const log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
+    uint64_t const swap_buffer_total_length = UINT64_C(1) << log_swap_buffer_total_length;
     my_complex_t* swap_buffer;
-    CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_length * sizeof(my_complex_t));
+    CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(my_complex_t));
     DEFER_CHECK_CUDA(cudaFree, swap_buffer);
 
     my_float_t* norm_sum_device;
@@ -425,63 +430,98 @@ int main(int argc, char** argv) {
             // MPI_Barrier(MPI_COMM_WORLD);
 
             /* target qubits is global */
-            if (target_qubit_num_physical >= num_qubits - log_num_procs) {
-                int64_t const swap_width = UINT64_C(1)<<(target_qubit_num_physical - log_num_procs);
-                int64_t const num_swap_areas = UINT64_C(1)<<(num_qubits - target_qubit_num_physical - 1);
-                // int64_t const pow2_nt_lnp = UINT64_C(1)<<(target_qubit_num_physical - log_num_procs);
+            if (target_qubit_num_physical >= num_qubits_local) {
 
-                int const fp = (proc_num >> (log_num_procs - num_qubits + target_qubit_num_physical)) & 1;
-                int const peer_gpu_num = (proc_num + ((fp)?-1:1) * (UINT64_C(1)<< (target_qubit_num_physical + log_num_procs - num_qubits)) + num_procs) & (num_procs-1);
+                int const* const swap_target_global_list = &target_qubit_num_physical;
+                int const swap_target_local = num_qubits - log_num_procs - 1;
+                int const* const swap_target_local_list = &swap_target_local;
+                int const num_targets = 1;
 
-                // fprintf(stderr, "[debug] nccl_rank=%d peer_gpu_num=%d\n", nccl_rank, peer_gpu_num);
+                // b_min
+                int const swap_target_local_min = *std::min_element(swap_target_local_list, swap_target_local_list + num_targets);
 
-                for(int64_t swap_area_num = 0; swap_area_num < num_swap_areas; swap_area_num++) {
-
-                    // fprintf(stderr, "[debug] nccl_rank=%d fp=%d\n", nccl_rank, fp);
-
-                    int64_t const swap_area_begin = (2*swap_area_num+((fp)?0:1)) * swap_width;
-                    // int64_t const swap_area_end = swap_area_begin + swap_width;
-
-                    int64_t swap_area_dispos = 0;
-                    while (true) {
-                        int64_t swap_length = swap_width - swap_area_dispos;
-                        if (swap_length > swap_buffer_length) {
-                            swap_length = swap_buffer_length;
-                        }
-                        int64_t const swap_area_pos = swap_area_begin + swap_area_dispos;
-
-                        /* implement swap here*/
-                        if (fp) {
-                            CHECK_NCCL(ncclGroupStart);
-                            CHECK_NCCL(ncclSend, (void*)&state_data_device[swap_area_pos], swap_length*2, ncclDouble, peer_gpu_num, nccl_comm, stream);
-                            CHECK_NCCL(ncclRecv, (void*)swap_buffer, swap_length * 2, ncclDouble, peer_gpu_num, nccl_comm, stream);
-                            CHECK_NCCL(ncclGroupEnd);
-                        } else {
-                            CHECK_NCCL(ncclGroupStart);
-                            CHECK_NCCL(ncclRecv, (void*)swap_buffer, swap_length * 2, ncclDouble, peer_gpu_num, nccl_comm, stream);
-                            CHECK_NCCL(ncclSend, (void*)&state_data_device[swap_area_pos], swap_length*2, ncclDouble, peer_gpu_num, nccl_comm, stream);
-                            CHECK_NCCL(ncclGroupEnd);
-                        }
-                        CHECK_CUDA(cudaMemcpyAsync, (void*)&state_data_device[swap_area_pos], (void*)swap_buffer, swap_length*sizeof(my_complex_t), cudaMemcpyDeviceToDevice, stream);
-
-                        swap_area_dispos += swap_length;
-                        if (swap_area_dispos==swap_width) {
-                            break;
-                        }
-                    }
+                uint64_t const local_buf_length = UINT64_C(1) << swap_target_local_min;
+                uint64_t swap_buffer_length = swap_buffer_total_length;
+                if (swap_buffer_length > local_buf_length) {
+                    swap_buffer_length = local_buf_length;
                 }
 
-                int const swap_qubit_num_logical = perm_p2l[target_qubit_num_physical - log_num_procs];
+                // generate a mask for generating global_nonswap_self
+                uint64_t global_swap_self_mask = 0;
+                for (int target_num = 0; target_num < num_targets; target_num++) {
+                    // a_delta = a – n_local
+                    int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
+                    global_swap_self_mask |= (UINT64_C(1) << swap_target_global_delta);
+                }
 
-                // swap p2l
-                perm_p2l[target_qubit_num_physical] = swap_qubit_num_logical;
-                perm_p2l[target_qubit_num_physical - log_num_procs] = target_qubit_num_logical;
+                // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
+                uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
 
-                // update l2p
-                perm_l2p[target_qubit_num_logical] = target_qubit_num_physical - log_num_procs;
-                perm_l2p[swap_qubit_num_logical] = target_qubit_num_physical;
+                // 1<<(num_local_qubits - b_min) 
+                uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
+                for (uint64_t local_num_self = 0; local_num_self < num_local_areas; local_num_self++) {
 
-                target_qubit_num_physical -= log_num_procs;
+                    // global_swap_peer = OR_i (local_num_selfのb_delta_i桁目)をa_delta_i桁目にする
+                    uint64_t global_swap_peer = 0;
+                    for (int target_num = 0; target_num < num_targets; target_num++) {
+                        // a_delta_i
+                        int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
+                        // b_delta_i
+                        int const swap_target_local_delta = swap_target_local_list[target_num] - swap_target_local_min;
+                        global_swap_peer |=
+                            // local_num_selfのb_delta_i桁目
+                            ((local_num_self >> swap_target_local_delta) & 1)
+                            // をa_delta_i桁目にする
+                            << swap_target_global_delta;
+                        
+                    }
+
+                    uint64_t const proc_num_peer = global_swap_peer | global_nonswap_self;
+
+                    // send & recv
+                    if (proc_num_peer == proc_num) { continue; }
+                    // CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
+                    // CHECK_NCCL(ncclRecv, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
+                    bool is_peer_greater = proc_num_peer > proc_num;
+                    for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
+                        CHECK_NCCL(ncclGroupStart);
+                        for (int send_recv = 0; send_recv < 2; send_recv++) {
+                            if (send_recv ^ is_peer_greater) {
+                                CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                            } else {
+                                CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                            }
+                        }
+                        CHECK_NCCL(ncclGroupEnd);
+                        CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(my_complex_t), cudaMemcpyDeviceToDevice, stream);
+                    }
+
+                }
+
+                // swap_target_global_logical_list[:] = perm_p2l[swap_target_global_list[:]]
+                // swap_target_local_logical_list[:] = perm_p2l[swap_target_local_list[:]]
+                std::vector<int> swap_target_local_logical_list(num_targets);
+                std::vector<int> swap_target_global_logical_list(num_targets);
+                for (int target_num = 0; target_num < num_targets; target_num++) {
+                    swap_target_local_logical_list[target_num] = perm_p2l[swap_target_local_list[target_num]];
+                    swap_target_global_logical_list[target_num] = perm_p2l[swap_target_global_list[target_num]];
+                }
+
+                // update p2l & l2p
+                // perm_p2l[swap_target_global_list[:]] = swap_target_local_logical_list[:]
+                // perm_p2l[swap_target_local_list[:]] = swap_target_global_logical_list[:]
+                // perm_l2p[swap_target_global_logical_list[:]] = swap_target_local_list[:]
+                // perm_l2p[swap_target_local_logical_list[:]] = swap_target_global_list[:]
+
+                for (int target_num = 0; target_num < num_targets; target_num++) {
+                    perm_p2l[swap_target_global_list[target_num]] = swap_target_local_logical_list[target_num];
+                    perm_p2l[swap_target_local_list[target_num]] = swap_target_global_logical_list[target_num];
+                    perm_l2p[swap_target_global_logical_list[target_num]] = swap_target_local_list[target_num];
+                    perm_l2p[swap_target_local_logical_list[target_num]] = swap_target_global_list[target_num];
+                }
+
+                target_qubit_num_physical = swap_target_local;
+
             }
 
             cuda_gate<hadamard><<<num_blocks, block_size, 0, stream>>>(num_qubits, target_qubit_num_physical, state_data_device);
@@ -494,7 +534,7 @@ int main(int argc, char** argv) {
         CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
         MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
         elapsed_ms = elapsed_ms_2;
-        if(proc_num==0) {
+        if (proc_num == 0) {
             fprintf(stderr, "[info] elapsed_gpu=%f\n", elapsed_ms * 1e-3);
             fprintf(stdout, "%lf\n", elapsed_ms * 1e-3);
         }

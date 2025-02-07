@@ -4,7 +4,8 @@ set -e
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
-OPTARG="-O3"
+# OPTARG="-O3"
+OPTARG=("-O3" "-Xcompiler" "-fopenmp" "-std=c++17" "-lnccl" "-lcurand")
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"
@@ -18,7 +19,6 @@ PROGRAM_NAME="${ORIGINAL_CODE_FN%.*}_${DATENOW}"
 CODE_FN="${PROGRAM_NAME}.${FN_EXT}"
 EXE_FN="${PROGRAM_NAME}.exe"
 
-cat "${ORIGINAL_CODE_FN}" > /dev/null # work around
 cp "${ORIGINAL_CODE_FN}" "${CODE_FN}"
 
 JOB_FN="job_${DATENOW}.sh"
@@ -69,12 +69,12 @@ nvcc \
   "${nvcc_options[@]}" \
   -gencode=arch=compute_80,code=sm_80 \
   -gencode=arch=compute_90,code=sm_90 \
-  -std=c++17 ${OPTARG} "${CODE_FN}" -lcurand -lnccl -o "${EXE_FN}"
+  "${OPTARG[@]}" "${CODE_FN}" -o "${EXE_FN}"
 
 # mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
 # export NCCL_DEBUG=TRACE
-mpirun --oversubscribe -np 2 ./"${EXE_FN}"
+mpirun --oversubscribe -np 8 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 
 set +x
