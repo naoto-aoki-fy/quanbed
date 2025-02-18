@@ -2,6 +2,10 @@
 
 set -e
 
+WORKDIR="20250218_1607_benchmark"
+WORKDIR="${WORKDIR%/}"
+mkdir -p "${WORKDIR}"
+
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 # OPTARG="-O3"
@@ -15,16 +19,13 @@ JOB_PARTITION="${HOSTNAME%-*}"
 ORIGINAL_CODE_FN="${1:-"main.cu"}"
 
 FN_EXT="${ORIGINAL_CODE_FN##*.}"
-PROGRAM_NAME="${ORIGINAL_CODE_FN%.*}_${DATENOW}"
+PROGRAM_NAME="${WORKDIR}/${ORIGINAL_CODE_FN%.*}_${DATENOW}"
 CODE_FN="${PROGRAM_NAME}.${FN_EXT}"
 EXE_FN="${PROGRAM_NAME}.exe"
 
 cp "${ORIGINAL_CODE_FN}" "${CODE_FN}"
 
-JOB_FN="job_${DATENOW}.sh"
-JOBNAME="${DATENOW}"
-
-OUTPUT_FN="output_${DATENOW}"
+OUTPUT_FN="${WORKDIR}/output_${DATENOW}"
 OUTPUT_STDOUT="${OUTPUT_FN}.out"
 OUTPUT_STDERR="${OUTPUT_FN}.err"
 
@@ -69,14 +70,14 @@ nvcc \
   "${nvcc_options[@]}" \
   -gencode=arch=compute_80,code=sm_80 \
   -gencode=arch=compute_90,code=sm_90 \
-  "${OPTARG[@]}" "${CODE_FN}" -o "${EXE_FN}"
+  "${OPTARG[@]}" "${ORIGINAL_CODE_FN}" -o "${EXE_FN}"
 
 # mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG=TRACE
 # -host "${HOSTNAME_FQDN%%.*}"
-mpirun --oversubscribe -np 8 ./"${EXE_FN}"
+mpirun --oversubscribe -np 8 -host "${HOSTNAME_FQDN%%.*}" ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 
 set +x

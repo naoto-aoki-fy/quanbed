@@ -2,7 +2,7 @@
 
 set -xe
 
-OPTARG="-O3"
+OPTARG=("-O3" "-Xcompiler" "-fopenmp" "-std=c++17" "-lnccl" "-lcurand")
 
 CODE_FN="main.cu"
 
@@ -46,7 +46,4 @@ done
 nvcc "${nvcc_options[@]}" \
     -gencode=arch=compute_80,code=sm_80 \
     -gencode=arch=compute_90,code=sm_90 \
-    -Xcompiler -fopenmp \
-    -std=c++17 \
-    -lnccl -lcurand \
-    "${OPTARG}" "${CODE_FN}" -o "${EXE_FN}"
+    "${OPTARG[@]}" "${CODE_FN}" -o "${EXE_FN}"

@@ -309,7 +309,7 @@ int main(int argc, char** argv) {
     // **注意**：normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note:** The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
     bool const do_normalization = false;
-    bool const calc_checksum = true;
+    bool const calc_checksum = false;
     int const num_rand_areas = 1;
 
     float elapsed_ms, elapsed_ms_2;
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 24;
+    int const num_qubits = 36;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     std::vector<int> perm_p2l(num_qubits);
@@ -362,7 +362,7 @@ int main(int argc, char** argv) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    int const num_samples = 1;
+    int const num_samples = 64;
     int const rng_seed = 12345;
 
     int const log_num_procs = log2_int(num_procs);
