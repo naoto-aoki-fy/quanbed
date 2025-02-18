@@ -73,7 +73,9 @@ nvcc \
 
 # mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
+# export NCCL_DEBUG=INFO
 # export NCCL_DEBUG=TRACE
+# -host "${HOSTNAME_FQDN%%.*}"
 mpirun --oversubscribe -np 8 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 

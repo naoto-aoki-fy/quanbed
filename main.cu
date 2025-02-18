@@ -14,6 +14,9 @@
 #include <unordered_set>
 #include <string_view>
 #include <algorithm>
+#include <string>
+#include <unordered_set>
+#include <tuple>
 
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -134,6 +137,8 @@ private:
 #define CONCAT_INNER(a, b) a ## b
 #define UNIQUE_NAME(base) CONCAT(base, __LINE__)
 
+#define DEFER_FUNC(func, ...) Defer UNIQUE_NAME(defer_)([&](){ func(__VA_ARGS__); })
+
 #define DEFER_CHECK_CUDA(func, ...) Defer UNIQUE_NAME(defer_)([&](){ CHECK_CUDA(func, __VA_ARGS__);})
 
 #define DEFER_CODE(code) Defer UNIQUE_NAME(defer_)([&]()code)
@@ -215,7 +220,97 @@ __global__ void cuda_gate(int64_t const num_qubits, int64_t const target_qubit_n
 }
 
 
+
+auto group_by_host(int const rank, int const size) {
+
+    // 各プロセスでホスト名を取得
+    char hostname[MPI_MAX_PROCESSOR_NAME];
+    int nameLen;
+    MPI_Get_processor_name(hostname, &nameLen);
+    std::string my_hostname(hostname, nameLen);
+
+    // rank 0で各プロセスのホスト名を受け取るためのバッファ（固定長）
+    std::vector<char> gatheredBuffer;
+    if (rank == 0) {
+        gatheredBuffer.resize(size * MPI_MAX_PROCESSOR_NAME, '\0');
+    }
+
+    // 各プロセスのホスト名をrank 0に集約（固定長文字列）
+    MPI_Gather(hostname, MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
+               (rank == 0 ? gatheredBuffer.data() : nullptr),
+               MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
+               0, MPI_COMM_WORLD);
+
+    // rank 0側で重複排除とノード番号の付与、さらにノード内のローカルランクを計算する
+    std::vector<int> node_numbers; // 各プロセスが所属するノード番号
+    std::vector<int> node_local_ranks; // 同一ノード内でのプロセス順（0から開始）
+    int node_count = 0;
+    if (rank == 0) {
+        // 集約された固定長文字列から std::vector<std::string> を作成
+        std::vector<std::string> hostnames;
+        hostnames.reserve(size);
+        for (int i = 0; i < size; i++) {
+            const char* ptr = gatheredBuffer.data() + i * MPI_MAX_PROCESSOR_NAME;
+            hostnames.push_back(std::string(ptr));
+        }
+
+        // ノード番号の付与（重複排除）
+        std::unordered_set<std::string> uniqueSet;
+        std::vector<std::string> uniqueHosts;
+        node_numbers.resize(size, -1);
+        for (int i = 0; i < size; i++) {
+            const std::string& host = hostnames[i];
+            if (uniqueSet.find(host) == uniqueSet.end()) {
+                uniqueSet.insert(host);
+                uniqueHosts.push_back(host);
+                node_numbers[i] = static_cast<int>(uniqueHosts.size()) - 1;
+            } else {
+                auto it = std::find(uniqueHosts.begin(), uniqueHosts.end(), host);
+                node_numbers[i] = static_cast<int>(std::distance(uniqueHosts.begin(), it));
+            }
+        }
+        node_count = static_cast<int>(uniqueHosts.size());
+
+        // 同一ノード内でのプロセス順（ローカルランク）の計算
+        node_local_ranks.resize(size, -1);
+        std::unordered_map<std::string, int> countMap;
+        for (int i = 0; i < size; i++) {
+            // 現在のホスト名の出現回数が、そのプロセスのローカルランクになる
+            node_local_ranks[i] = countMap[hostnames[i]];
+            countMap[hostnames[i]]++;
+        }
+    }
+
+    // rank 0で決定したノード数を全プロセスにブロードキャスト
+    MPI_Bcast(&node_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // 各プロセスに自分のノード番号とノード内のローカルランクを通知（scatter）
+    int my_node_number = -1;
+    int my_node_local_rank = -1;
+    MPI_Scatter((rank == 0 ? node_numbers.data() : nullptr), 1, MPI_INT,
+                &my_node_number, 1, MPI_INT,
+                0, MPI_COMM_WORLD);
+    MPI_Scatter((rank == 0 ? node_local_ranks.data() : nullptr), 1, MPI_INT,
+                &my_node_local_rank, 1, MPI_INT,
+                0, MPI_COMM_WORLD);
+
+    // 結果をstderrに出力
+    // fprintf(stderr,
+    //         "Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
+    //         rank, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
+
+    return std::make_tuple(my_hostname, my_node_number, my_node_local_rank, node_count);
+
+}
+
+
 int main(int argc, char** argv) {
+
+    // **注意**：normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
+    // **Note:** The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
+    bool const do_normalization = false;
+    bool const calc_checksum = true;
+    int const num_rand_areas = 1;
 
     float elapsed_ms, elapsed_ms_2;
 
@@ -232,7 +327,17 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[info] num_procs=%d\n", num_procs);
     }
 
-    int const gpu_id = proc_num;
+    /* ==== begin local rank ==== */
+    auto [my_hostname, my_node_number, my_node_local_rank, node_count] = group_by_host(proc_num, num_procs);
+    fprintf(stderr,
+            "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
+            proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
+    // MPI_Finalize();
+    // return 0;
+    /* ==== end local rank ==== */
+
+    // int const gpu_id = proc_num;
+    int const gpu_id = my_node_local_rank;
     // int const gpu_id = 0;
     CHECK_CUDA(cudaSetDevice, gpu_id);
 
@@ -249,8 +354,6 @@ int main(int argc, char** argv) {
     int const num_qubits = 24;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
-
-
     std::vector<int> perm_p2l(num_qubits);
     std::vector<int> perm_l2p(num_qubits);
 
@@ -259,7 +362,7 @@ int main(int argc, char** argv) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    int const num_samples = 32;
+    int const num_samples = 1;
     int const rng_seed = 12345;
 
     int const log_num_procs = log2_int(num_procs);
@@ -311,16 +414,33 @@ int main(int argc, char** argv) {
     if (proc_num == 0) { fprintf(stderr, "[info] generating random state\n"); }
     curandGenerator_t rng_device;
 
-    CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-    CHECK_CURAND(curandSetStream, rng_device, stream);
+    // CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+    // CHECK_CURAND(curandSetStream, rng_device, stream);
     // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
 
     if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); } 
     CHECK_CUDA(cudaEventRecord, event_1, stream);
 
-    CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
-    CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local * 2, 0.0, 1.0);
-
+    // if (false) {
+    //     CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+    //     CHECK_CURAND(curandSetStream, rng_device, stream);
+    //     CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
+    //     CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local * 2 /* complex */, 0.0, 1.0);
+    //     CHECK_CURAND(curandDestroyGenerator, rng_device);
+    // } else
+    {
+        // int const num_rand_areas = 4;
+        int const log_num_rand_areas = log2_int(num_rand_areas);
+        // if (log_num_rand_areas!=1) { throw; }
+        uint64_t const num_states_rand_area = num_states_local >> log_num_rand_areas;
+        for (int rand_area_num = 0; rand_area_num < num_rand_areas; rand_area_num++) {
+            CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+            CHECK_CURAND(curandSetStream, rng_device, stream);
+            CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * num_rand_areas + rand_area_num);
+            CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)(state_data_device + num_states_rand_area * ((uint64_t)rand_area_num)), num_states_rand_area * 2 /* complex */, 0.0, 1.0);
+            CHECK_CURAND(curandDestroyGenerator, rng_device);
+        }
+    }
     // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
     // CHECK_CURAND(curandGenerateNormalDouble, rng_device, (my_float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
 
@@ -332,24 +452,13 @@ int main(int argc, char** argv) {
 
     // CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((my_float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
 
-    {
-        int64_t data_length = num_states_local;
-        int64_t num_blocks_reduce;
-        int block_size_reduce;
+    if (do_normalization) {
 
-        if (data_length > block_size) {
-            block_size_reduce = block_size;
-            num_blocks_reduce = data_length >> log_block_size;
-        } else {
-            block_size_reduce = data_length;
-            num_blocks_reduce = 1;
-        }
+        {
+            int64_t data_length = num_states_local;
+            int64_t num_blocks_reduce;
+            int block_size_reduce;
 
-        norm_sum_reduce_kernel<<<num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream>>>(state_data_device, norm_sum_device);
-
-        data_length = num_blocks_reduce;
-
-        while (data_length > 1) {
             if (data_length > block_size) {
                 block_size_reduce = block_size;
                 num_blocks_reduce = data_length >> log_block_size;
@@ -358,62 +467,81 @@ int main(int argc, char** argv) {
                 num_blocks_reduce = 1;
             }
 
-            sum_reduce_kernel<<<num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream>>>(norm_sum_device, norm_sum_device);
+            norm_sum_reduce_kernel<<<num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream>>>(state_data_device, norm_sum_device);
 
             data_length = num_blocks_reduce;
+
+            while (data_length > 1) {
+                if (data_length > block_size) {
+                    block_size_reduce = block_size;
+                    num_blocks_reduce = data_length >> log_block_size;
+                } else {
+                    block_size_reduce = data_length;
+                    num_blocks_reduce = 1;
+                }
+
+                sum_reduce_kernel<<<num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream>>>(norm_sum_device, norm_sum_device);
+
+                data_length = num_blocks_reduce;
+            }
         }
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        my_float_t norm_sum_local;
+        CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(my_float_t), cudaMemcpyDeviceToHost, stream);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        CHECK_CUDA(cudaFree, (void*)norm_sum_device);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        CHECK_CUDA(cudaStreamSynchronize, stream);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        my_float_t norm_sum_global;
+        MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
+
+        if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
+
+        my_float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
+        fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        normalize_kernel<<<1ULL<<(num_qubits_local+1-log_block_size), block_size, 0, stream>>>((my_float_t*)(void*)state_data_device, normalize_factor);
+        
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        CHECK_CUDA(cudaEventRecord, event_2, stream);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        CHECK_CUDA(cudaStreamSynchronize, stream);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+        elapsed_ms = elapsed_ms_2;
+
+        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+        if(proc_num==0) {
+            fprintf(stderr, "[info] rng elapsed=%lf\n", elapsed_ms * 1e-3);
+            fprintf(stderr, "[info] normalize done\n");
+        }
+
     }
 
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    my_float_t norm_sum_local;
-    CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(my_float_t), cudaMemcpyDeviceToHost, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    CHECK_CUDA(cudaFree, (void*)norm_sum_device);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    CHECK_CUDA(cudaStreamSynchronize, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    my_float_t norm_sum_global;
-    MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
-
-    if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
-
-    my_float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
-    // fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    normalize_kernel<<<1ULL<<(num_qubits_local+1-log_block_size), block_size, 0, stream>>>((my_float_t*)(void*)state_data_device, normalize_factor);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    CHECK_CUDA(cudaEventRecord, event_2, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    CHECK_CUDA(cudaStreamSynchronize, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-    elapsed_ms = elapsed_ms_2;
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
     if(proc_num==0) {
-        fprintf(stderr, "[info] rng elapsed=%lf\n", elapsed_ms * 1e-3);
-        fprintf(stderr, "[info] normalize done\n");
         fprintf(stderr, "[info] gpu_hadamard\n");
     }
 
@@ -541,8 +669,8 @@ int main(int argc, char** argv) {
 
     }
 
-    if(false) {
-        if(proc_num==0) {
+    if (calc_checksum) {
+        if (proc_num==0) {
             fprintf(stderr, "[info] gathering state data\n");
 
             process cksumproc;
@@ -553,7 +681,8 @@ int main(int argc, char** argv) {
             }
 
             my_complex_t* state_data_host = (my_complex_t*)malloc(num_states * sizeof(my_complex_t));
-            DEFER_CODE({free(state_data_host);});
+            // DEFER_CODE({free(state_data_host);});
+            DEFER_FUNC(free, state_data_host);
 
             CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
             for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
