@@ -2,7 +2,7 @@
 
 set -e
 
-WORKDIR="20250219_1026_a100_openssl"
+WORKDIR="20250219_1820_GH200_N4_unified"
 WORKDIR="${WORKDIR%/}"
 mkdir -p "${WORKDIR}"
 
@@ -77,7 +77,7 @@ nvcc \
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG=TRACE
 # -host "${HOSTNAME_FQDN%%.*}"
-mpirun --oversubscribe -np 8 -host "${HOSTNAME_FQDN%%.*}" ./"${EXE_FN}"
+mpirun --oversubscribe -np 4 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 
 set +x

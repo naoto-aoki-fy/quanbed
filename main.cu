@@ -305,11 +305,12 @@ auto group_by_host(int const rank, int const size) {
 
 int main(int argc, char** argv) {
 
-    // **注意**：normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
-    // **Note:** The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
+    // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
+    // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
     bool const do_normalization = false;
-    bool const calc_checksum = true;
+    bool const calc_checksum = false;
     int const num_rand_areas = 1;
+    bool const use_unified_memory = true;
 
     float elapsed_ms, elapsed_ms_2;
 
@@ -350,7 +351,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 24;
+    int const num_qubits = 29;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     std::vector<int> perm_p2l(num_qubits);
@@ -397,13 +398,20 @@ int main(int argc, char** argv) {
     if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
     my_complex_t* state_data_device;
-    CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
+    if (use_unified_memory) {
+        CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
+        CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
+    } else {
+        CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
+    }
     DEFER_CHECK_CUDA(cudaFree, state_data_device);
 
     int const log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
+    // int const log_swap_buffer_total_length = num_qubits_local;
     uint64_t const swap_buffer_total_length = UINT64_C(1) << log_swap_buffer_total_length;
     my_complex_t* swap_buffer;
     CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(my_complex_t));
+    // CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(my_complex_t));
     DEFER_CHECK_CUDA(cudaFree, swap_buffer);
 
     my_float_t* norm_sum_device;
@@ -417,7 +425,6 @@ int main(int argc, char** argv) {
     // CHECK_CURAND(curandSetStream, rng_device, stream);
     // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
 
-    if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); } 
     CHECK_CUDA(cudaEventRecord, event_1, stream);
 
     // if (false) {
@@ -453,6 +460,7 @@ int main(int argc, char** argv) {
 
     if (do_normalization) {
 
+        if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); } 
         {
             int64_t data_length = num_states_local;
             int64_t num_blocks_reduce;
