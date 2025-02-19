@@ -18,13 +18,12 @@
 #include <unordered_set>
 #include <tuple>
 
+#include <openssl/evp.h>
 #include <mpi.h>
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <cuda/std/complex>
 #include <nccl.h>
-
-#include "pipe3.hpp"
 
 #define SQRT2 (1.41421356237309504880168872420969807856967187537694)
 #define INV_SQRT2 (1.0/SQRT2)
@@ -309,7 +308,7 @@ int main(int argc, char** argv) {
     // **注意**：normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note:** The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
     bool const do_normalization = false;
-    bool const calc_checksum = false;
+    bool const calc_checksum = true;
     int const num_rand_areas = 1;
 
     float elapsed_ms, elapsed_ms_2;
@@ -351,7 +350,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 36;
+    int const num_qubits = 24;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     std::vector<int> perm_p2l(num_qubits);
@@ -673,15 +672,19 @@ int main(int argc, char** argv) {
         if (proc_num==0) {
             fprintf(stderr, "[info] gathering state data\n");
 
-            process cksumproc;
-            char const* const cksumproc_argv[] = {"openssl", "sha256", "-r", NULL};
-            if (popen3(&cksumproc, cksumproc_argv, true, true, false) != 0) {
-                fprintf(stderr, "[errpr] popen3 failed\n");
+            EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+            if (!mdctx) {
+                perror("EVP_MD_CTX_new failed");
+                exit(1);
+            }
+        
+            if (EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL) != 1) {
+                perror("EVP_DigestInit_ex failed");
+                EVP_MD_CTX_free(mdctx);
                 exit(1);
             }
 
             my_complex_t* state_data_host = (my_complex_t*)malloc(num_states * sizeof(my_complex_t));
-            // DEFER_CODE({free(state_data_host);});
             DEFER_FUNC(free, state_data_host);
 
             CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
@@ -697,42 +700,30 @@ int main(int argc, char** argv) {
                     int qubit_num_physical = perm_l2p[qubit_num_logical];
                     state_num_physical = state_num_physical | (((state_num_logical >> qubit_num_logical) & 1) << qubit_num_physical);
                 }
-                fwrite(&state_data_host[state_num_physical], sizeof(my_complex_t), 1, cksumproc.stdin);
-            }
-            // for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
-            //     int64_t state_num_physical = state_num_logical;
-            //     fwrite(&state_data_host[state_num_physical], sizeof(my_complex_t), 1, cksumproc.stdin);
-            // }
-            // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-            fclose(cksumproc.stdin);
-
-            int cksumbuf_length = 128;
-            char cksumbuf[cksumbuf_length];
-            fread(cksumbuf, 1, cksumbuf_length, cksumproc.stdout);
-            char* cksum_space_pos = strchr(cksumbuf, ' ');
-            if (cksum_space_pos!=NULL) {
-                *cksum_space_pos = '\0';
-            }
-            fprintf(stderr, "[info] check sum: %s\n", cksumbuf);
-
-            // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-            int cksumproc_status;
-            waitpid(cksumproc.pid, &cksumproc_status, 0);
-
-            // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-            if (cksumproc_status!=0) {
-                fprintf(stderr, "[warn] cksumproc_status=%d\n", cksumproc_status);
+                if (EVP_DigestUpdate(mdctx, &state_data_host[state_num_physical], sizeof(my_complex_t)) != 1) {
+                    perror("EVP_DigestUpdate failed");
+                    EVP_MD_CTX_free(mdctx);
+                    exit(1);
+                }
             }
 
-            // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+            unsigned char evp_hash[EVP_MAX_MD_SIZE];
+            unsigned int evp_hash_len;
+            if (EVP_DigestFinal_ex(mdctx, evp_hash, &evp_hash_len) != 1) {
+                perror("EVP_DigestFinal_ex failed");
+                EVP_MD_CTX_free(mdctx);
+                exit(1);
+            }
 
+            fprintf(stderr, "[info] checksum: ");
+            for (unsigned int i = 0; i < evp_hash_len; i++) {
+                fprintf(stderr, "%02x", evp_hash[i]);
+            }
+            fprintf(stderr, "\n");
+
+            EVP_MD_CTX_free(mdctx);
         } else {
-            // for(int proc_num = 1; proc_num < num_procs; proc_num++) {
             MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-            // }
         }
     }
 

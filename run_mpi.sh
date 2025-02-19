@@ -2,14 +2,14 @@
 
 set -e
 
-WORKDIR="20250218_1607_benchmark"
+WORKDIR="20250219_1026_a100_openssl"
 WORKDIR="${WORKDIR%/}"
 mkdir -p "${WORKDIR}"
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 # OPTARG="-O3"
-OPTARG=("-O3" "-Xcompiler" "-fopenmp" "-std=c++17" "-lnccl" "-lcurand")
+OPTARG=("-O3" "-Xcompiler" "-fopenmp" "-std=c++17" "-lnccl" "-lcurand" "-lssl" "-lcrypto")
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"
