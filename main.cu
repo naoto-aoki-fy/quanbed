@@ -25,122 +25,16 @@
 #include <cuda/std/complex>
 #include <nccl.h>
 
+#include "log2_int.hpp"
+#include "check_x.hpp"
+#include "group_by_hostname.hpp"
+#include "reorder_macro.h"
+
 #define SQRT2 (1.41421356237309504880168872420969807856967187537694)
 #define INV_SQRT2 (1.0/SQRT2)
 
-unsigned int log2_int(unsigned int arg) {
-    return sizeof(unsigned int) * CHAR_BIT - __builtin_clz(arg) - 1;
-}
-unsigned int log2_int(int arg) {
-    return log2_int((unsigned int)arg);
-}
-
-#if UINT_MAX != ULONG_MAX
-// #if sizeof(unsigned int) != sizeof(unsigned long)
-unsigned int log2_int(unsigned long arg) {
-    return sizeof(unsigned long) * CHAR_BIT - __builtin_clzl(arg) - 1;
-}
-unsigned int log2_int(long arg) {
-    return log2_int((unsigned long)arg);
-}
-#endif
-
-#if ULONG_MAX != ULLONG_MAX
-// #if sizeof(unsigned long) != sizeof(unsigned long long)
-unsigned int log2_int(unsigned long long arg) {
-    return sizeof(unsigned long long) * CHAR_BIT - __builtin_clzll(arg) - 1;
-}
-unsigned int log2_int(long long arg) {
-    return log2_int((unsigned long long)arg);
-}
-#endif
-
 typedef double my_float_t;
 typedef cuda::std::complex<my_float_t> my_complex_t;
-
-constexpr const char* get_filename(const char* filename_abs) {
-    size_t const pos = std::string_view(filename_abs).rfind("/");
-    return (pos != std::string_view::npos) ? &filename_abs[pos+1] : filename_abs;
-}
-
-template <typename Func>
-void check_cuda(char const* const filename, int const lineno, char const* const funcname, Func func)
-{
-    auto err = func();
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, cudaGetErrorString(err));
-        exit(1);
-    }
-}
-
-#define CHECK_CUDA(func, ...) check_cuda(get_filename(__FILE__), __LINE__, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
-
-#define CASE_RETURN(code) case code: return #code
-
-static const char *curandGetErrorString(curandStatus_t error) {
-    switch (error) {
-        CASE_RETURN(CURAND_STATUS_SUCCESS);
-        CASE_RETURN(CURAND_STATUS_VERSION_MISMATCH);
-        CASE_RETURN(CURAND_STATUS_NOT_INITIALIZED);
-        CASE_RETURN(CURAND_STATUS_ALLOCATION_FAILED);
-        CASE_RETURN(CURAND_STATUS_TYPE_ERROR);
-        CASE_RETURN(CURAND_STATUS_OUT_OF_RANGE);
-        CASE_RETURN(CURAND_STATUS_LENGTH_NOT_MULTIPLE);
-        CASE_RETURN(CURAND_STATUS_DOUBLE_PRECISION_REQUIRED);
-        CASE_RETURN(CURAND_STATUS_LAUNCH_FAILURE);
-        CASE_RETURN(CURAND_STATUS_PREEXISTING_FAILURE);
-        CASE_RETURN(CURAND_STATUS_INITIALIZATION_FAILED);
-        CASE_RETURN(CURAND_STATUS_ARCH_MISMATCH);
-        CASE_RETURN(CURAND_STATUS_INTERNAL_ERROR);
-    }
-    return "<unknown>";
-}
-
-template <typename Func>
-void check_curand(char const* const filename, int const lineno, char const* const funcname, Func func)
-{
-    auto err = func();
-    if (err != CURAND_STATUS_SUCCESS)
-    {
-        fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, curandGetErrorString(err));
-        exit(1);
-    }
-}
-
-#define CHECK_CURAND(func, ...) check_curand(get_filename(__FILE__), __LINE__, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
-
-template <typename Func>
-void check_nccl(char const* const filename, int const lineno, char const* const funcname, Func func)
-{
-    auto err = func();
-    if (err != ncclSuccess)
-    {
-        fprintf(stderr, "[debug] %s:%d call:%s error:%s\n", filename, lineno, funcname, ncclGetErrorString(err));
-        exit(1);
-    }
-}
-
-#define CHECK_NCCL(func, ...) check_nccl(get_filename(__FILE__), __LINE__, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
-
-template <typename Func>
-class Defer {
-public:
-    Defer(Func func) : func_(func) {}
-    ~Defer() { this->func_(); }
-private:
-    Func func_;
-};
-
-#define CONCAT(a, b) CONCAT_INNER(a, b)
-#define CONCAT_INNER(a, b) a ## b
-#define UNIQUE_NAME(base) CONCAT(base, __LINE__)
-
-#define DEFER_FUNC(func, ...) Defer UNIQUE_NAME(defer_)([&](){ func(__VA_ARGS__); })
-
-#define DEFER_CHECK_CUDA(func, ...) Defer UNIQUE_NAME(defer_)([&](){ CHECK_CUDA(func, __VA_ARGS__);})
-
-#define DEFER_CODE(code) Defer UNIQUE_NAME(defer_)([&]()code)
 
 __global__ void norm_sum_reduce_kernel(my_complex_t const* const input_global, my_float_t* const output_global)
 {
@@ -218,91 +112,6 @@ __global__ void cuda_gate(int64_t const num_qubits, int64_t const target_qubit_n
     Gate::apply(thread_num, num_qubits, target_qubit_num, state_data_device);
 }
 
-
-
-auto group_by_host(int const rank, int const size) {
-
-    // 各プロセスでホスト名を取得
-    char hostname[MPI_MAX_PROCESSOR_NAME];
-    int nameLen;
-    MPI_Get_processor_name(hostname, &nameLen);
-    std::string my_hostname(hostname, nameLen);
-
-    // rank 0で各プロセスのホスト名を受け取るためのバッファ（固定長）
-    std::vector<char> gatheredBuffer;
-    if (rank == 0) {
-        gatheredBuffer.resize(size * MPI_MAX_PROCESSOR_NAME, '\0');
-    }
-
-    // 各プロセスのホスト名をrank 0に集約（固定長文字列）
-    MPI_Gather(hostname, MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
-               (rank == 0 ? gatheredBuffer.data() : nullptr),
-               MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
-               0, MPI_COMM_WORLD);
-
-    // rank 0側で重複排除とノード番号の付与、さらにノード内のローカルランクを計算する
-    std::vector<int> node_numbers; // 各プロセスが所属するノード番号
-    std::vector<int> node_local_ranks; // 同一ノード内でのプロセス順（0から開始）
-    int node_count = 0;
-    if (rank == 0) {
-        // 集約された固定長文字列から std::vector<std::string> を作成
-        std::vector<std::string> hostnames;
-        hostnames.reserve(size);
-        for (int i = 0; i < size; i++) {
-            const char* ptr = gatheredBuffer.data() + i * MPI_MAX_PROCESSOR_NAME;
-            hostnames.push_back(std::string(ptr));
-        }
-
-        // ノード番号の付与（重複排除）
-        std::unordered_set<std::string> uniqueSet;
-        std::vector<std::string> uniqueHosts;
-        node_numbers.resize(size, -1);
-        for (int i = 0; i < size; i++) {
-            const std::string& host = hostnames[i];
-            if (uniqueSet.find(host) == uniqueSet.end()) {
-                uniqueSet.insert(host);
-                uniqueHosts.push_back(host);
-                node_numbers[i] = static_cast<int>(uniqueHosts.size()) - 1;
-            } else {
-                auto it = std::find(uniqueHosts.begin(), uniqueHosts.end(), host);
-                node_numbers[i] = static_cast<int>(std::distance(uniqueHosts.begin(), it));
-            }
-        }
-        node_count = static_cast<int>(uniqueHosts.size());
-
-        // 同一ノード内でのプロセス順（ローカルランク）の計算
-        node_local_ranks.resize(size, -1);
-        std::unordered_map<std::string, int> countMap;
-        for (int i = 0; i < size; i++) {
-            // 現在のホスト名の出現回数が、そのプロセスのローカルランクになる
-            node_local_ranks[i] = countMap[hostnames[i]];
-            countMap[hostnames[i]]++;
-        }
-    }
-
-    // rank 0で決定したノード数を全プロセスにブロードキャスト
-    MPI_Bcast(&node_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-    // 各プロセスに自分のノード番号とノード内のローカルランクを通知（scatter）
-    int my_node_number = -1;
-    int my_node_local_rank = -1;
-    MPI_Scatter((rank == 0 ? node_numbers.data() : nullptr), 1, MPI_INT,
-                &my_node_number, 1, MPI_INT,
-                0, MPI_COMM_WORLD);
-    MPI_Scatter((rank == 0 ? node_local_ranks.data() : nullptr), 1, MPI_INT,
-                &my_node_local_rank, 1, MPI_INT,
-                0, MPI_COMM_WORLD);
-
-    // 結果をstderrに出力
-    // fprintf(stderr,
-    //         "Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
-    //         rank, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
-
-    return std::make_tuple(my_hostname, my_node_number, my_node_local_rank, node_count);
-
-}
-
-
 int main(int argc, char** argv) {
 
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
@@ -310,7 +119,7 @@ int main(int argc, char** argv) {
     bool const do_normalization = false;
     bool const calc_checksum = false;
     int const num_rand_areas = 1;
-    bool const use_unified_memory = true;
+    bool const use_unified_memory = false;
 
     float elapsed_ms, elapsed_ms_2;
 
@@ -351,7 +160,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 29;
+    int const num_qubits = 24;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     std::vector<int> perm_p2l(num_qubits);
