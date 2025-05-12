@@ -8,7 +8,7 @@
 
 #include <mpi.h>
 
-auto group_by_host(int const rank, int const size) {
+auto group_by_hostname(int const rank, int const size) {
 
     // 各プロセスでホスト名を取得
     char hostname[MPI_MAX_PROCESSOR_NAME];
