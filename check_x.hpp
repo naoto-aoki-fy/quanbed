@@ -6,9 +6,9 @@
 #include <string_view>
 #include <vector>
 
-// #include <mpi.h>
-// #include <cuda_runtime.h>
-// #include <curand.h>
+#include <mpi.h>
+#include <cuda_runtime.h>
+#include <curand.h>
 // #include <nccl.h>
 
 constexpr const char* get_filename(const char* filename_abs) {

@@ -22,7 +22,8 @@
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <cuda/std/complex>
-#include <nccl.h>
+// #include <nccl.h>
+#include "pseudo_nccl.h"
 
 #include "log2_int.hpp"
 #include "check_x.hpp"
@@ -95,20 +96,6 @@ __constant__ qcs_kernel_common_struct qcs_kernel_common_constant;
 #define QCS_KERNEL_INPUT_MAX_SIZE 256
 __constant__ unsigned char qcs_kernel_input_constant[QCS_KERNEL_INPUT_MAX_SIZE];
 
-// struct qcs_kernel_input_q1_struct {
-//     int target_qubit_num;
-// };
-
-// struct interleaved_qubit_num_mask_struct {
-//     int ct_qubit_num;
-//     int sorted_qubit_num;
-// };
-
-// struct qcs_kernel_input_qnlist_struct {
-//     int num_ct_qubits;
-//     interleaved_qubit_num_mask_struct qubit_list[0];
-// };
-
 struct qcs_kernel_input_qnlist_struct {
     int num_target_qubits;
     int num_positive_control_qubits;
@@ -127,7 +114,7 @@ struct qcs_kernel_input_qnlist_struct {
 
 };
 
-__host__ __device__ uin64_t qkiqn_needed_size(
+__host__ __device__ uint64_t qkiqn_needed_size(
     int const num_positive_control_qubits,
     int const num_negative_control_qubits,
     int const num_target_qubits
@@ -142,7 +129,7 @@ __host__ __device__ uin64_t qkiqn_needed_size(
 }
 
 
-__host__ __device__ uin64_t qkiqn_sizeof(qcs_kernel_input_qnlist_struct const* arg) {
+__host__ __device__ uint64_t qkiqn_sizeof(qcs_kernel_input_qnlist_struct const* arg) {
     return qkiqn_needed_size(arg->num_positive_control_qubits, arg->num_negative_control_qubits, arg->num_target_qubits);
 }
 
@@ -153,24 +140,41 @@ __host__ __device__ int qkiqn_get_num_operand_qubits(qcs_kernel_input_qnlist_str
       + arg->num_target_qubits;
 }
 
-__host__ __device__ int* qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_qnlist_struct const* arg) {
+__host__ __device__ int const* qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_qnlist_struct const* arg) {
     return &arg->qubit_num_list[0];
 }
 
-__host__ __device__ int* qkiqn_get_positive_control_qubit_num_list(qcs_kernel_input_qnlist_struct const* arg) {
+__host__ __device__ int* qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_qnlist_struct* arg) {
+    return &arg->qubit_num_list[0];
+}
+
+__host__ __device__ int* qkiqn_get_positive_control_qubit_num_list(qcs_kernel_input_qnlist_struct* arg) {
     return &arg->qubit_num_list[qkiqn_get_num_operand_qubits(arg)];
 }
 
-__host__ __device__ int* qkiqn_get_target_qubit_num_list(qcs_kernel_input_qnlist_struct const* arg) {
+__host__ __device__ int const* qkiqn_get_positive_control_qubit_num_list(qcs_kernel_input_qnlist_struct const* arg) {
+    return &arg->qubit_num_list[qkiqn_get_num_operand_qubits(arg)];
+}
+
+__host__ __device__ int* qkiqn_get_target_qubit_num_list(qcs_kernel_input_qnlist_struct* arg) {
     return &arg->qubit_num_list[
-        2 * arg->num_positive_control_target_qubits
-        + arg->num_negative_control_target_qubits
+        2 * arg->num_positive_control_qubits
+        + arg->num_negative_control_qubits
         + arg->num_target_qubits
     ];
 }
 
+__host__ __device__ int const* qkiqn_get_target_qubit_num_list(qcs_kernel_input_qnlist_struct const* arg) {
+    return &arg->qubit_num_list[
+        2 * arg->num_positive_control_qubits
+        + arg->num_negative_control_qubits
+        + arg->num_target_qubits
+    ];
+}
+
+
 struct cn_h {
-    static __device__ __host__ void apply() {
+    static __device__ void apply() {
 
         int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
 
@@ -180,7 +184,7 @@ struct cn_h {
         uint64_t index_state_0 = 0;
 
         int const num_operand_qubits = qkiqn_get_num_operand_qubits(args);
-        int* const qubit_num_list_sorted = qkiqn_get_qubit_num_list_sorted(args);
+        int const* const qubit_num_list_sorted = qkiqn_get_operand_qubit_num_list_sorted(args);
 
         // generate index_state_0
         // ignoring positive control qubits
@@ -195,22 +199,22 @@ struct cn_h {
 
         // update index_state_0
         // considering positive control qubits
-        int* const positive_control_qubit_num_list = qkiqn_get_positive_control_qubit_num_list(args);
+        int const* const positive_control_qubit_num_list = qkiqn_get_positive_control_qubit_num_list(args);
         for(int i = 0; i < args->num_positive_control_qubits; i++) {
             index_state_0 |= 1ULL << positive_control_qubit_num_list[i];
         }
 
         // generate index_state_1
-        // target_qubit_num == 1
+        // num_target_qubits == 1
         // int const target_qubit_num = qkiqn_get_target_qubit_num_list(args)[0];
         auto const target_qubit_num = qkiqn_get_target_qubit_num_list(args)[0];
         uint64_t const index_state_1 = index_state_0 | (1ULL << target_qubit_num);
 
-        my_complex_t const amp_state_0 = qcs_kernel_common_constant->state_data_device[index_state_0];
-        my_complex_t const amp_state_1 = qcs_kernel_common_constant->state_data_device[index_state_1];
+        my_complex_t const amp_state_0 = qcs_kernel_common_constant.state_data_device[index_state_0];
+        my_complex_t const amp_state_1 = qcs_kernel_common_constant.state_data_device[index_state_1];
 
-        qcs_kernel_common_constant->state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
-        qcs_kernel_common_constant->state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
+        qcs_kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
+        qcs_kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
 
     }
 };
@@ -220,14 +224,14 @@ __global__ void cuda_gate_cn_h() {
 }
 
 struct hadamard {
-    static __device__ __host__ void apply() {
+    static __device__ void apply() {
 
         uint64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
         // qcs_kernel_input_q1_struct* args = (qcs_kernel_input_q1_struct*)(void*)qcs_kernel_input_constant;
         auto args = (qcs_kernel_input_qnlist_struct const*)(void*)qcs_kernel_input_constant;
         auto const target_qubit_num = qkiqn_get_target_qubit_num_list(args)[0];
 
-        uint64_t const lower_mask = (((uint64_t)1)<<(args->target_qubit_num)) - (uint64_t)1;
+        uint64_t const lower_mask = (((uint64_t)1)<<target_qubit_num) - (uint64_t)1;
 
         uint64_t const index_state_lower = thread_num & lower_mask;
         uint64_t const index_state_higher = (thread_num & ~lower_mask) << ((int64_t)1);
@@ -235,18 +239,18 @@ struct hadamard {
         uint64_t const index_state_0 = index_state_lower | index_state_higher;
         uint64_t const index_state_1 = index_state_0 | (((int64_t)1)<<target_qubit_num);
 
-        my_complex_t const amp_state_0 = qcs_kernel_common_constant->state_data_device[index_state_0];
-        my_complex_t const amp_state_1 = qcs_kernel_common_constant->state_data_device[index_state_1];
+        my_complex_t const amp_state_0 = qcs_kernel_common_constant.state_data_device[index_state_0];
+        my_complex_t const amp_state_1 = qcs_kernel_common_constant.state_data_device[index_state_1];
 
-        qcs_kernel_common_constant->state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
-        qcs_kernel_common_constant->state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
+        qcs_kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
+        qcs_kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
 
     }
 };
 
 template<class Gate>
 __global__ void cuda_gate() {
-    Gate::apply(thread_num, args);
+    Gate::apply();
 }
 
 int main(int argc, char** argv) {
@@ -258,7 +262,7 @@ int main(int argc, char** argv) {
     int const num_rand_areas = 1;
     bool const use_unified_memory = false;
 
-    bool const initstate_use_curand = false;
+    bool const initstate_use_curand = true;
     bool const initstate_use_data = false;
     bool const output_statevector = true;
 
@@ -287,8 +291,8 @@ int main(int argc, char** argv) {
             proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
 
     // int const gpu_id = proc_num;
-    int const gpu_id = my_node_local_rank;
-    // int const gpu_id = 0;
+    // int const gpu_id = my_node_local_rank;
+    int const gpu_id = 0;
     CHECK_CUDA(cudaSetDevice, gpu_id);
 
     ncclUniqueId nccl_id;
@@ -301,7 +305,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 24;
+    int const num_qubits = 18;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     std::vector<int> perm_p2l(num_qubits);
@@ -318,9 +322,8 @@ int main(int argc, char** argv) {
     int const log_num_procs = log2_int(num_procs);
 
     int const log_block_size = 8;
-    int const target_qubit_num_begin = 0;
-    // int const target_qubit_num_end = 0;
-    int const target_qubit_num_end = num_qubits;
+    // int const target_qubit_num_begin = 0;
+    // int const target_qubit_num_end = num_qubits;
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size=%d\n", log_block_size); }
 
@@ -362,12 +365,12 @@ int main(int argc, char** argv) {
     qcs_kernel_common_struct qcs_kernel_common_host;
     qcs_kernel_common_host.num_qubits = num_qubits;
     qcs_kernel_common_host.state_data_device = state_data_device;
-    CHECK_CUDA(cudaMemcpyToSymbolAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs_kernel_common_struct), 0, cudaMemcpyHostToDevice, stream);
+    CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs_kernel_common_struct), cudaMemcpyHostToDevice, stream);
 
     qcs_kernel_input_qnlist_struct* qcs_kernel_input_constant_addr;
     CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs_kernel_input_constant);
 
-    std::vector<void> qcs_kernel_input_host_buffer(0);
+    std::vector<char> qcs_kernel_input_host_buffer;
     // qcs_kernel_input_qnlist_struct* qcs_kernel_input_host = (qcs_kernel_input_qnlist_struct*)malloc(QCS_KERNEL_INPUT_SIZE);
     // DEFER_FUNC(free, qcs_kernel_input_host);
 
@@ -440,7 +443,7 @@ int main(int argc, char** argv) {
 
         for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
             if (proc_num_active == proc_num) {
-                FILE* const fp = open("statevector_output.bin", "rb");
+                FILE* const fp = fopen("statevector_output.bin", "rb");
                 if (fp == NULL) {
                     throw std::runtime_error("open failed");
                 }
@@ -617,7 +620,7 @@ int main(int argc, char** argv) {
             // int const num_targets = 1;
 
             // b_min
-            int const swap_target_local_min = *std::min_element(swap_target_local_list, swap_target_local_list + num_swap_qubits);
+            int const swap_target_local_min = *std::min_element(swap_target_local_list.data(), swap_target_local_list.data() + num_swap_qubits);
 
             uint64_t const local_buf_length = UINT64_C(1) << swap_target_local_min;
             uint64_t swap_buffer_length = swap_buffer_total_length;
@@ -710,7 +713,7 @@ int main(int argc, char** argv) {
         positive_control_qubit_num_physical_local_list.resize(0);
 
         for (int cqni = 0; cqni < positive_control_qubit_num_logical_list.size(); cqni++) {
-            auto const positive_control_qubit_num_physical = perm_l2p[positive_control_qubit_num_logical_list[cqni]]
+            auto const positive_control_qubit_num_physical = perm_l2p[positive_control_qubit_num_logical_list[cqni]];
             positive_control_qubit_num_physical_list[cqni] = positive_control_qubit_num_physical;
             if (positive_control_qubit_num_physical >= num_qubits_local) {
                 positive_control_qubit_num_physical_global_list.push_back(positive_control_qubit_num_physical);
@@ -748,7 +751,9 @@ int main(int argc, char** argv) {
                 target_qubit_num_physical_list.size()
             );
             if (qkiqn_size > QCS_KERNEL_INPUT_MAX_SIZE) {
-                throw std::runtime_error("qkiqn_size > QCS_KERNEL_INPUT_MAX_SIZE", qkiqn_size, QCS_KERNEL_INPUT_MAX_SIZE);
+                std::vector<char> runtime_error_message(256);
+                sprintf(runtime_error_message.data(), "qkiqn_size(%llu) > QCS_KERNEL_INPUT_MAX_SIZE(%llu)", qkiqn_size, QCS_KERNEL_INPUT_MAX_SIZE);
+                throw std::runtime_error(runtime_error_message.data());
             }
             qcs_kernel_input_host_buffer.resize(qkiqn_size);
             qcs_kernel_input_qnlist_struct* const qcs_kernel_input_host = (qcs_kernel_input_qnlist_struct*)qcs_kernel_input_host_buffer.data();
@@ -759,15 +764,15 @@ int main(int argc, char** argv) {
 
             auto positive_control_qubit_num_list_kernel_arg = qkiqn_get_positive_control_qubit_num_list(qcs_kernel_input_host);
             for (int pcqi = 0; pcqi < positive_control_qubit_num_physical_local_list.size(); pcqi++) {
-                positive_control_qubit_num_list_kernel_arg[pcqi] = positive_control_qubit_num_physical_local_list[pcqni];
+                positive_control_qubit_num_list_kernel_arg[pcqi] = positive_control_qubit_num_physical_local_list[pcqi];
             }
 
-            auto negative_control_qubit_num_list_kernel_arg = qkiqn_get_negative_control_qubit_num_list(qcs_kernel_input_host);
-            for (int ncqi = 0; ncqi < negative_control_qubit_num_physical_local_list.size(); ncqi++) {
-                negative_control_qubit_num_list_kernel_arg[ncqi] = negative_control_qubit_num_physical_local_list[ncqni];
-            }
+            // auto negative_control_qubit_num_list_kernel_arg = qkiqn_get_negative_control_qubit_num_list(qcs_kernel_input_host);
+            // for (int ncqi = 0; ncqi < negative_control_qubit_num_physical_local_list.size(); ncqi++) {
+            //     negative_control_qubit_num_list_kernel_arg[ncqi] = negative_control_qubit_num_physical_local_list[ncqi];
+            // }
 
-            auto target_qubit_num_list_kernel_arg = qkiqn_get_control_target_qubit_num_list_sorted(qcs_kernel_input_host);
+            auto target_qubit_num_list_kernel_arg = qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_host);
             for (int tqi = 0; tqi < target_qubit_num_physical_list.size(); tqi++) {
                 target_qubit_num_list_kernel_arg[tqi] = target_qubit_num_physical_list[tqi];
             }
@@ -786,7 +791,7 @@ int main(int argc, char** argv) {
 
             std::sort(operand_qubit_num_list.begin(), operand_qubit_num_list.end()); /* ascending order */
 
-            auto qubit_num_list_sorted_kernel_arg = qkiqn_get_qubit_num_list_sorted(qcs_kernel_input_host);
+            auto qubit_num_list_sorted_kernel_arg = qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_host);
             for (int qni = 0; qni < operand_qubit_num_list.size(); qni++) {
                 qubit_num_list_sorted_kernel_arg[qni] = operand_qubit_num_list[qni];
             }
@@ -828,14 +833,31 @@ int main(int argc, char** argv) {
 
         for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
             if (proc_num_active == proc_num) {
-                FILE* const fp = open("statevector_output.bin", "wb");
+                FILE* const fp = fopen("statevector_output.bin", "ab");
                 if (fp == NULL) {
                     throw std::runtime_error("open failed");
                 }
-                fseek(fp, proc_num * num_states_local * sizeof(my_complex_t), SEEK_SET);
-                size_t const ret = fwrite(state_data_host, sizeof(my_complex_t), num_states_local, fp);
-                if (ret != num_states_local) {
-                    throw std::runtime_error("fwrite failed");
+                for (uint64_t state_num_physical_local = 0; state_num_physical_local < num_states_local; state_num_physical_local++) {
+                    uint64_t const state_num_physical = state_num_physical_local | (((uint64_t)proc_num) << num_qubits_local);
+                    uint64_t state_num_logical = 0;
+                    for(int qubit_num_physical = 0; qubit_num_physical < num_qubits; qubit_num_physical++) {
+                        int qubit_num_logical = perm_p2l[qubit_num_physical];
+                        state_num_logical = state_num_logical | (((state_num_physical >> qubit_num_physical) & 1) << qubit_num_logical);
+                    }
+                    int const ret_fseek = fseek(fp, state_num_logical * sizeof(my_complex_t), SEEK_SET);
+                    if (ret_fseek!=0) {
+                        fprintf(stderr, "errno=%d\n", errno);
+                        std::vector<char> error_buf(128);
+                        sprintf(error_buf.data(), "ret_fseek=%d", ret_fseek);
+                        throw std::runtime_error(error_buf.data());
+                    }
+                    size_t const ret = fwrite(&state_data_host[state_num_physical_local], sizeof(my_complex_t), 1, fp);
+                    if (ret != 1) {
+                        fprintf(stderr, "errno=%d\n", errno);
+                        std::vector<char> error_buf(128);
+                        sprintf(error_buf.data(), "fwrite failed ret=%d", ret);
+                        throw std::runtime_error(error_buf.data());
+                    }
                 }
                 fclose(fp);
             }

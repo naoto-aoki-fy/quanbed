@@ -2,14 +2,16 @@
 
 set -e
 
-WORKDIR="20250219_1820_GH200_N4_unified"
+WORKDIR="20250513_debug"
 WORKDIR="${WORKDIR%/}"
 mkdir -p "${WORKDIR}"
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 # OPTARG="-O3"
-OPTARG=("-O3" "-Xcompiler" "-fopenmp" "-std=c++17" "-lnccl" "-lcurand" "-lssl" "-lcrypto")
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -rdc=true)
+# "-lnccl" 
+# -lssl -lcrypto 
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"
@@ -36,7 +38,7 @@ exec > >(tee "${OUTPUT_STDOUT}" >&3) 2> >(tee "${OUTPUT_STDERR}" >&4)
 
 python3 -c "import os, json, sys; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"SLURM\")}));" 1>"${OUTPUT_STDERR}" 1>&2
 
-module load system/${JOB_PARTITION} nvhpc
+# module load system/${JOB_PARTITION} nvhpc
 
 echo "[info] getting mpicxx params" 1>&2
 
@@ -65,12 +67,17 @@ for word in "${mpicxx_output[@]}"; do
     esac
 done
 
+# -gencode=arch=compute_61,code=sm_61
+# -gencode=arch=compute_80,code=sm_80
+# -gencode=arch=compute_90,code=sm_90
+
+SM_VER=61
+
 set -x
 nvcc \
-  "${nvcc_options[@]}" \
-  -gencode=arch=compute_80,code=sm_80 \
-  -gencode=arch=compute_90,code=sm_90 \
-  "${OPTARG[@]}" "${ORIGINAL_CODE_FN}" -o "${EXE_FN}"
+    "${nvcc_options[@]}" \
+    -gencode=arch=compute_${SM_VER},code=sm_${SM_VER} \
+    "${OPTARG[@]}" "${ORIGINAL_CODE_FN}" -o "${EXE_FN}"
 
 # mpicxx -std=c++17 ${OPTARG} "${CODE_FN}" -cudalib=curand,nccl -o "${EXE_FN}"
 
