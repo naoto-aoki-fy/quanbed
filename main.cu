@@ -26,7 +26,7 @@
 #include <nccl.h>
 #include <openssl/evp.h>
 
-#include "mynccl.h"
+// #include "mynccl.h"
 
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"
@@ -332,7 +332,7 @@ __global__ void cuda_gate() {
 
 int main(int argc, char** argv) {
 
-    myncclPatch();
+    // myncclPatch();
 
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.

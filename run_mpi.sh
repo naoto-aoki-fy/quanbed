@@ -7,11 +7,8 @@ WORKDIR="${WORKDIR%/}"
 mkdir -p "${WORKDIR}"
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
-
-# OPTARG="-O3"
-OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c )
-# "-lnccl" 
-# -lssl -lcrypto 
+#  -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c 
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -lnccl -lssl -lcrypto -rdc=true)
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"
@@ -84,7 +81,7 @@ nvcc \
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG=TRACE
 # -host "${HOSTNAME_FQDN%%.*}"
-mpirun --oversubscribe -np 8 ./"${EXE_FN}"
+mpirun -x LD_PRELOAD=./mynccl.so --oversubscribe -np 8 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 
 set +x

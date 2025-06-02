@@ -1,3 +1,5 @@
+// nvcc -shared -Xcompiler -fPIC -std=c++17 -lmpi -lnccl -rdc=true -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c -o mynccl.so
+
 #include "mynccl.h"
 
 #include <nccl.h>
@@ -225,7 +227,11 @@ static ncclResult_t myncclRecv(void* recvbuff, uint64_t count, int datatype, int
     return ncclSuccess;
 }
 
-extern "C" void myncclPatch() {
+
+// extern "C"
+__attribute__((constructor))
+static void myncclPatch() {
+
     myncclCommStructPrivate.origCudaMalloc = ::cudaMalloc;
     myncclCommStructPrivate.jmpPatchCudaMalloc = cdl_jmp_attach((void**)&myncclCommStructPrivate.origCudaMalloc, (void**)myncclCudaMalloc);
 
