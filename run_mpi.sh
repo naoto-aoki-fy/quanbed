@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}"
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 # OPTARG="-O3"
-OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -lssl -lcrypto -rdc=true -I./cdl86 ./cdl86/cdl.c )
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c )
 # "-lnccl" 
 # -lssl -lcrypto 
 

@@ -23,10 +23,10 @@
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <cuda/std/complex>
-// #include <nccl.h>
+#include <nccl.h>
 #include <openssl/evp.h>
 
-#include "pseudo_nccl.h"
+#include "mynccl.hpp"
 
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"
@@ -331,6 +331,8 @@ __global__ void cuda_gate() {
 }
 
 int main(int argc, char** argv) {
+
+    myncclPatch();
 
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
@@ -846,7 +848,7 @@ int main(int argc, char** argv) {
                     positive_control_qubit_num_physical_local_list.push_back(positive_control_qubit_num_physical);
                     // fprintf(stderr, "debug: proc_num=%d ctrl(local)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
                 }
-                
+
             }
 
             negative_control_qubit_num_physical_list.resize(negative_control_qubit_num_logical_list.size());
@@ -928,7 +930,7 @@ int main(int argc, char** argv) {
                 //         }
                 //     }
                 //     if (proc_num_active != num_procs - 1) {
-                //         MPI_Barrier(MPI_COMM_WORLD); 
+                //         MPI_Barrier(MPI_COMM_WORLD);
                 //     }
                 // }
 
@@ -998,7 +1000,6 @@ int main(int argc, char** argv) {
         for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
             if (proc_num_active == proc_num) {
                 FILE* const fp = fopen("statevector_output.bin", (proc_num==0)? "wb": "rb+");
-                
                 if (fp == NULL) {
                     throw std::runtime_error("open failed");
                 }
@@ -1044,7 +1045,7 @@ int main(int argc, char** argv) {
                 perror("EVP_MD_CTX_new failed");
                 exit(1);
             }
-        
+
             if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
                 perror("EVP_DigestInit_ex failed");
                 EVP_MD_CTX_free(mdctx);
