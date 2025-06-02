@@ -3,7 +3,13 @@
 #define NCCL_H_
 
 #include <stdint.h>
+#include <mpi.h>
 #include <cuda_runtime.h>
+
+#include "check_mpi.hpp"
+#include "check_cuda.hpp"
+
+#include <cdl.h>
 
 typedef int ncclUniqueId;
 
@@ -18,7 +24,6 @@ typedef enum  {
     ncclInProgress = 7,
 } ncclResult_t;
 
-
 inline static char const* ncclGetErrorString(ncclResult_t error) {
     switch (error) {
         case ncclSuccess: return "success";
@@ -26,7 +31,6 @@ inline static char const* ncclGetErrorString(ncclResult_t error) {
     }
     return "<unknown>";
 }
-
 
 #include "check_x.hpp"
 
@@ -78,25 +82,89 @@ typedef struct {
     int peer;
     cudaStream_t stream;
 
-} nccl_sendrecv_args_t;
+} pnccl_sendrecv_args_t;
 
-struct ncclComm_struct {
+typedef struct {
+    cudaIpcMemHandle_t handle;
+    uint64_t offset;
+} pnccl_handle_offset;
+
+struct pnccl_comm_struct {
     bool in_group;
-    std::vector<nccl_sendrecv_args_t> send_args;
-    std::vector<nccl_sendrecv_args_t> recv_args;
+    std::vector<pnccl_sendrecv_args_t> send_args;
+    std::vector<pnccl_sendrecv_args_t> recv_args;
     // std::vector<cudaIpcMemHandle_t> send_buff_handle_list;
-    std::vector<cudaIpcMemHandle_t> src_buff_handle_list;
+    std::vector<pnccl_handle_offset> src_buff_handle_list;
     std::vector<void*> src_buff_list;
     std::vector<MPI_Request> mpi_request_list;
+    std::vector<uint64_t> pointer_list;
+    struct cdl_jmp_patch jmp_patch;
 };
 
-typedef ncclComm_struct* ncclComm_t;
+typedef pnccl_comm_struct* ncclComm_t;
 
-ncclComm_struct nccl_comm_struct_private;
+pnccl_comm_struct nccl_comm_struct_private;
+
+void* pncclGetClosestPointer(void* pointer_input, uint64_t* offset) {
+    uint64_t num_ptrs = nccl_comm_struct_private.pointer_list.size();
+    uint64_t distance_closest = (uint64_t)(-1);
+    uint64_t pointer_closest = 0;
+    for(uint64_t ptr_num = 0; ptr_num < num_ptrs; ptr_num++) {
+        uint64_t pointer = nccl_comm_struct_private.pointer_list[ptr_num];
+        // fprintf(stderr, "[%d] pointer=%p pointer_input=%p\n", __LINE__, pointer, pointer_input);
+        if ((uint64_t)pointer_input < pointer) {
+            continue;
+        }
+        uint64_t const distance = (uint64_t)pointer_input - pointer;
+        if (distance < distance_closest) {
+            distance_closest = distance;
+            pointer_closest = pointer;
+        }
+    }
+    if (pointer_closest != 0 && offset != 0) {
+        *offset = distance_closest;
+    }
+    return (void*)pointer_closest;
+}
+
+
+// template<class T>
+// inline cudaError_t pncclCudaMalloc(T **devPtr, size_t size) {
+//     cudaError_t const ret = cudaMalloc(devPtr, size);
+//     nccl_comm_struct_private.pointer_list.push_back((uint64_t)*devPtr);
+//     // fprintf(stderr, "[%d] *devPtr=%p", __LINE__, *devPtr);
+//     return ret;
+// }
+
+static cudaError_t (*orig_cudaMalloc)(void **, size_t) = NULL;
+
+cudaError_t pncclCudaMalloc(void **devPtr, size_t size) {
+    cudaError_t const ret = orig_cudaMalloc(devPtr, size);
+    nccl_comm_struct_private.pointer_list.push_back((uint64_t)*devPtr);
+    return ret;
+}
+
+
 
 inline ncclResult_t ncclCommInitRank(ncclComm_t* comm, int ndev, ncclUniqueId nccl_id, int rank) {
     *comm = &nccl_comm_struct_private;
     nccl_comm_struct_private.in_group = false;
+
+    // plthook_t *plthook;
+    // if (plthook_open(&plthook, NULL) != 0) {
+    //     fprintf(stderr, "plthook_open error: %s\n", plthook_error());
+    //     return ncclSystemError;
+    // }
+
+    // if (plthook_replace(plthook, "cudaMalloc", (void *)pncclCudaMalloc, (void **)&orig_cudaMalloc) != 0) {
+    //     fprintf(stderr, "plthook_replace error: %s\n", plthook_error());
+    //     return ncclSystemError;
+    // }
+
+    // struct cdl_jmp_patch jmp_patch = {};
+    orig_cudaMalloc = ::cudaMalloc;
+    nccl_comm_struct_private.jmp_patch = cdl_jmp_attach((void**)&orig_cudaMalloc, (void**)pncclCudaMalloc);
+
     return ncclSuccess;
 }
 
@@ -110,6 +178,8 @@ inline ncclResult_t ncclGroupStart() {
     return ncclSuccess;
 }
 
+
+
 inline ncclResult_t ncclGroupEnd() {
 
     if (!nccl_comm_struct_private.in_group) {
@@ -121,16 +191,19 @@ inline ncclResult_t ncclGroupEnd() {
 
     /* get memhandle and send it to peer */
     for (size_t i = 0; i < nccl_comm_struct_private.send_args.size(); ++i) {
-        cudaIpcMemHandle_t send_buff_handle;
-        cudaIpcGetMemHandle(&send_buff_handle, nccl_comm_struct_private.send_args[i].buff);
-        CHECK_MPI(MPI_Isend, &send_buff_handle, sizeof(cudaIpcMemHandle_t), MPI_BYTE, nccl_comm_struct_private.send_args[i].peer, 0, MPI_COMM_WORLD, &nccl_comm_struct_private.mpi_request_list[mpi_request_idx]);
+        // fprintf(stderr, "[debug] nccl_comm_struct_private.send_args[i].buff=%p\n", nccl_comm_struct_private.send_args[i].buff);
+        pnccl_handle_offset handle_offset;
+        void* const buffer = pncclGetClosestPointer(nccl_comm_struct_private.send_args[i].buff, &handle_offset.offset);
+        // fprintf(stderr, "[debug] pncclGetClosestPointer=%p\n", buffer);
+        CHECK_CUDA(cudaIpcGetMemHandle, &handle_offset.handle, buffer);
+        CHECK_MPI(MPI_Isend, &handle_offset, sizeof(pnccl_handle_offset), MPI_BYTE, nccl_comm_struct_private.send_args[i].peer, 0, MPI_COMM_WORLD, &nccl_comm_struct_private.mpi_request_list[mpi_request_idx]);
         mpi_request_idx++;
     }
 
     /* recv memhandle from peer */
     nccl_comm_struct_private.src_buff_handle_list.resize(nccl_comm_struct_private.recv_args.size());
     for (size_t i = 0; i < nccl_comm_struct_private.send_args.size(); ++i) {
-        CHECK_MPI(MPI_Irecv, &nccl_comm_struct_private.src_buff_handle_list[i], sizeof(cudaIpcMemHandle_t), MPI_BYTE, nccl_comm_struct_private.recv_args[i].peer, 0, MPI_COMM_WORLD, &nccl_comm_struct_private.mpi_request_list[mpi_request_idx]);
+        CHECK_MPI(MPI_Irecv, &nccl_comm_struct_private.src_buff_handle_list[i], sizeof(pnccl_handle_offset), MPI_BYTE, nccl_comm_struct_private.recv_args[i].peer, 0, MPI_COMM_WORLD, &nccl_comm_struct_private.mpi_request_list[mpi_request_idx]);
         mpi_request_idx++;
     }
 
@@ -140,8 +213,16 @@ inline ncclResult_t ncclGroupEnd() {
     /* open memhandle and copy data */
     nccl_comm_struct_private.src_buff_list.resize(nccl_comm_struct_private.src_buff_handle_list.size());
     for (size_t i = 0; i < nccl_comm_struct_private.src_buff_handle_list.size(); ++i) {
-        cudaIpcOpenMemHandle(&nccl_comm_struct_private.src_buff_list[i], nccl_comm_struct_private.src_buff_handle_list[i], cudaIpcMemLazyEnablePeerAccess);
-        CHECK_CUDA(cudaMemcpyAsync, nccl_comm_struct_private.recv_args[i].buff, nccl_comm_struct_private.src_buff_list[i], nccl_comm_struct_private.recv_args[i].count * sizeof_ncclDataType_t(nccl_comm_struct_private.recv_args[i].datatype), cudaMemcpyDeviceToDevice, nccl_comm_struct_private.recv_args[i].stream);
+        cudaIpcOpenMemHandle(&nccl_comm_struct_private.src_buff_list[i], nccl_comm_struct_private.src_buff_handle_list[i].handle, cudaIpcMemLazyEnablePeerAccess);
+        CHECK_CUDA(
+            cudaMemcpyAsync,
+            nccl_comm_struct_private.recv_args[i].buff,
+            /* nccl_comm_struct_private.src_buff_list[i] */
+            (void*)((uint64_t)nccl_comm_struct_private.src_buff_list[i] + nccl_comm_struct_private.src_buff_handle_list[i].offset),
+            nccl_comm_struct_private.recv_args[i].count * sizeof_ncclDataType_t(nccl_comm_struct_private.recv_args[i].datatype),
+            cudaMemcpyDeviceToDevice,
+            nccl_comm_struct_private.recv_args[i].stream
+        );
     }
 
     /* synchronize streams */
@@ -190,5 +271,9 @@ inline ncclResult_t ncclRecv(void* recvbuff, uint64_t count, int datatype, int p
     }
     return ncclSuccess;
 }
+
+
+
+
 
 #endif /* NCCL_H_ */

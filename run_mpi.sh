@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}"
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 
 # OPTARG="-O3"
-OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -rdc=true)
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -lssl -lcrypto -rdc=true -I./cdl86 ./cdl86/cdl.c )
 # "-lnccl" 
 # -lssl -lcrypto 
 
@@ -84,7 +84,7 @@ nvcc \
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG=TRACE
 # -host "${HOSTNAME_FQDN%%.*}"
-mpirun --oversubscribe -np 4 ./"${EXE_FN}"
+mpirun --oversubscribe -np 8 ./"${EXE_FN}"
 # mpirun -np 1 ./"${EXE_FN}"
 
 set +x

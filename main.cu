@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cmath>
 #include <stdint.h>
+#include <unistd.h>
 
 #include <stdexcept>
 #include <string>
@@ -23,12 +24,18 @@
 #include <curand.h>
 #include <cuda/std/complex>
 // #include <nccl.h>
+#include <openssl/evp.h>
+
 #include "pseudo_nccl.h"
 
 #include "log2_int.hpp"
-#include "check_x.hpp"
 #include "group_by_hostname.hpp"
 #include "reorder_macro.h"
+#include "check_mpi.hpp"
+#include "check_cuda.hpp"
+#include "check_curand.hpp"
+#include "check_nccl.hpp"
+// #include "check_nvshmemx.hpp"
 
 #define SQRT2 (1.41421356237309504880168872420969807856967187537694)
 #define INV_SQRT2 (1.0/SQRT2)
@@ -84,6 +91,13 @@ __global__ void normalize_kernel(my_float_t* const data_global, my_float_t const
 {
     int64_t const idx = blockDim.x * blockIdx.x + threadIdx.x;
     data_global[idx] *= factor;
+}
+
+__global__ void initstate_sequential_kernel(my_complex_t* const data_global, int proc_num)
+{
+    uint64_t const num_threads = (uint64_t)gridDim.x * (uint64_t)blockDim.x;
+    uint64_t const idx = (uint64_t)blockDim.x * (uint64_t)blockIdx.x + (uint64_t)threadIdx.x;
+    data_global[idx] = idx + num_threads * (uint64_t)proc_num;
 }
 
 struct qcs_kernel_common_struct {
@@ -223,6 +237,65 @@ __global__ void cuda_gate_cn_h() {
     cn_h::apply();
 }
 
+
+struct cn_x {
+    static __device__ void apply() {
+
+        int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
+
+        // int const target_qubit_num = 1;
+        auto args = (qcs_kernel_input_qnlist_struct const*)(void*)qcs_kernel_input_constant;
+
+        uint64_t index_state_0 = 0;
+
+        int const num_operand_qubits = qkiqn_get_num_operand_qubits(args);
+        int const* const qubit_num_list_sorted = qkiqn_get_operand_qubit_num_list_sorted(args);
+
+        // generate index_state_0
+        // ignoring positive control qubits
+        uint64_t lower_mask = 0;
+        // for(int i = 0; i < num_operand_qubits; i++) {
+        //     uint64_t const lower_mask_next = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
+        //     uint64_t const mask = lower_mask_next & ~lower_mask;
+        //     lower_mask = lower_mask_next;
+        //     index_state_0 |= (thread_num & mask) << i;
+        // }
+        for(int i = 0; i < num_operand_qubits; i++) {
+            uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
+            uint64_t const upper_mask = mask & ~lower_mask;
+            lower_mask = mask;
+            index_state_0 |= (thread_num & upper_mask) << i;
+        }
+        index_state_0 |= ((thread_num & ~lower_mask) << num_operand_qubits);
+
+        // update index_state_0
+        // considering positive control qubits
+        int const* const positive_control_qubit_num_list = qkiqn_get_positive_control_qubit_num_list(args);
+        for(int i = 0; i < args->num_positive_control_qubits; i++) {
+            index_state_0 |= (1ULL << positive_control_qubit_num_list[i]);
+        }
+
+        // generate index_state_1
+        // num_target_qubits == 1
+        // int const target_qubit_num = qkiqn_get_target_qubit_num_list(args)[0];
+        auto const target_qubit_num = qkiqn_get_target_qubit_num_list(args)[0];
+        uint64_t const index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+
+        my_complex_t const amp_state_0 = qcs_kernel_common_constant.state_data_device[index_state_0];
+        my_complex_t const amp_state_1 = qcs_kernel_common_constant.state_data_device[index_state_1];
+
+        qcs_kernel_common_constant.state_data_device[index_state_0] = amp_state_1;
+        qcs_kernel_common_constant.state_data_device[index_state_1] = amp_state_0;
+
+    }
+};
+
+__global__ void cuda_gate_cn_x() {
+    // printf("kernel: cuda_gate_cn_x\n");
+    cn_x::apply();
+}
+
+
 struct hadamard {
     static __device__ void apply() {
 
@@ -248,6 +321,10 @@ struct hadamard {
     }
 };
 
+struct identity {
+    static __device__ void apply() { }
+};
+
 template<class Gate>
 __global__ void cuda_gate() {
     Gate::apply();
@@ -258,16 +335,18 @@ int main(int argc, char** argv) {
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
     bool const do_normalization = false;
-
-    int const num_rand_areas = 1;
+    bool const calc_checksum = true;
     bool const use_unified_memory = false;
 
-    bool const initstate_use_curand = true;
+    bool const initstate_debug = true;
+    bool const initstate_0 = false;
+    bool const initstate_use_curand = false;
     bool const initstate_use_data = false;
+
     bool const output_statevector = true;
 
-    if(!(initstate_use_curand^initstate_use_data)) {
-        throw std::runtime_error("!(initstate_use_curand^initstate_use_data)");
+    if(initstate_use_curand+initstate_use_data+initstate_0+initstate_debug!=1) {
+        throw std::runtime_error("specify only 1 item for initstate");
     }
 
     float elapsed_ms, elapsed_ms_2;
@@ -277,13 +356,15 @@ int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
     int num_procs, proc_num;
-
     MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
 
     if (proc_num==0) {
         fprintf(stderr, "[info] num_procs=%d\n", num_procs);
     }
+
+    int const num_rand_areas = 8 / num_procs;
+    // int const num_rand_areas = 1;
 
     auto [my_hostname, my_node_number, my_node_local_rank, node_count] = group_by_hostname(proc_num, num_procs);
     fprintf(stderr,
@@ -305,7 +386,7 @@ int main(int argc, char** argv) {
     int nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    int const num_qubits = 18;
+    int const num_qubits = 14;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
     std::vector<int> perm_p2l(num_qubits);
@@ -316,14 +397,16 @@ int main(int argc, char** argv) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    int const num_samples = 64;
+    // int const num_samples = 64;
+    int const num_samples = 1;
     int const rng_seed = 12345;
 
     int const log_num_procs = log2_int(num_procs);
 
-    int const log_block_size = 8;
-    // int const target_qubit_num_begin = 0;
-    // int const target_qubit_num_end = num_qubits;
+    int const log_block_size = 9;
+    int const target_qubit_num_begin = 0;
+    int const target_qubit_num_end = num_qubits;
+    // int const target_qubit_num_end = 2;
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size=%d\n", log_block_size); }
 
@@ -387,6 +470,33 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size) * sizeof(my_float_t));
     // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
 
+    if (initstate_debug) {
+        // std::vector<my_complex_t> state_data_host(num_states_local);
+        // for (uint64_t state_num_local = 0; state_num_local < num_states_local; state_num_local++) {
+        //     state_data_host[state_num_local] = state_num_local + proc_num * num_states_local;
+        // }
+        // CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(my_complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
+        uint64_t num_blocks_init;
+        uint64_t block_size_init;
+        if (num_qubits_local >= log_block_size) {
+            num_blocks_init = num_states_local >> log_block_size;
+            block_size_init = block_size;
+        } else {
+            num_blocks_init = 1;
+            block_size_init = num_states_local;
+        }
+        // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
+        // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
+        initstate_sequential_kernel<<<num_blocks_init, block_size_init, 0, stream>>>(state_data_device, proc_num);
+    }
+
+    if (initstate_0) {
+        if (proc_num == 0) {
+            my_float_t const one = 1;
+            CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(my_float_t), cudaMemcpyHostToDevice, stream);
+        }
+    }
+
     if (initstate_use_curand) {
 
         MPI_Barrier(MPI_COMM_WORLD);
@@ -443,7 +553,7 @@ int main(int argc, char** argv) {
 
         for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
             if (proc_num_active == proc_num) {
-                FILE* const fp = fopen("statevector_output.bin", "rb");
+                FILE* const fp = fopen("statevector_input.bin", "rb");
                 if (fp == NULL) {
                     throw std::runtime_error("open failed");
                 }
@@ -578,245 +688,293 @@ int main(int argc, char** argv) {
 
         CHECK_CUDA(cudaEventRecord, event_1, stream);
 
-        // for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++) {
-        std::vector<int> target_qubit_num_logical_list = {0};
-        std::vector<int> positive_control_qubit_num_logical_list = {num_qubits - 1};
-        std::vector<int> negative_control_qubit_num_logical_list = {1, 2};
+        // for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
+        {
 
-        // std::vector<int> target_qubit_num_physical_list(target_qubit_num_logical_list.size());
-        target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
-        for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
-            target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
-        }
+            // std::vector<int> target_qubit_num_logical_list = {target_qubit_num_logical};
+            // std::vector<int> positive_control_qubit_num_logical_list = {};
+            // std::vector<int> negative_control_qubit_num_logical_list = {};
 
-        swap_target_global_list.resize(0);
-        for (int tqni = 0; tqni < target_qubit_num_physical_list.size(); tqni++) {
-            auto tqn_i = target_qubit_num_physical_list[tqni];
-            if (tqn_i >= num_qubits_local) {
-                swap_target_global_list.push_back(tqn_i);
-                target_qubit_num_physical_list[tqni] = num_qubits_local - 1 - tqn_i + num_qubits_local;
-            }
-        }
-        int const num_swap_qubits = swap_target_global_list.size();
+            std::vector<int> target_qubit_num_logical_list = {0};
+            std::vector<int> positive_control_qubit_num_logical_list = {1};
+            std::vector<int> negative_control_qubit_num_logical_list = {2};
 
-        // std::vector<int> swap_target_local_list(num_swap_qubits);
-        swap_target_local_list.resize(num_swap_qubits);
-        for (int sti = 0; sti < num_swap_qubits; sti++) {
-            swap_target_local_list[sti] = num_qubits_local - 1 - sti;
-        }
-
-        // int target_qubit_num_physical = perm_l2p[target_qubit_num_logical];
-
-        // // if(proc_num==0) fprintf(stderr, "[debug] target_qubit_num_logical=%d target_qubit_num_physical=%d\n", target_qubit_num_logical, target_qubit_num_physical);
-        // // MPI_Barrier(MPI_COMM_WORLD);
-
-        /* target qubits is global */
-        // if (target_qubit_num_physical >= num_qubits_local) {
-        if (swap_target_global_list.size() > 0) {
-
-            // int const* const swap_target_global_list = &target_qubit_num_physical;
-            // int const swap_target_local = num_qubits - log_num_procs - 1;
-            // int const* const swap_target_local_list = &swap_target_local;
-            // int const num_targets = 1;
-
-            // b_min
-            int const swap_target_local_min = *std::min_element(swap_target_local_list.data(), swap_target_local_list.data() + num_swap_qubits);
-
-            uint64_t const local_buf_length = UINT64_C(1) << swap_target_local_min;
-            uint64_t swap_buffer_length = swap_buffer_total_length;
-            if (swap_buffer_length > local_buf_length) {
-                swap_buffer_length = local_buf_length;
+            // std::vector<int> target_qubit_num_physical_list(target_qubit_num_logical_list.size());
+            target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
+            for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
+                target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
+                // fprintf(stderr, "[debug] target_qubit_num_physical_list[tqni]=%d tqni=%d\n", target_qubit_num_physical_list[tqni], tqni);
             }
 
-            // generate a mask for generating global_nonswap_self
-            uint64_t global_swap_self_mask = 0;
-            for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                // a_delta = a – n_local
-                int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
-                global_swap_self_mask |= (UINT64_C(1) << swap_target_global_delta);
-            }
-
-            // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
-            uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
-
-            // 1<<(num_local_qubits - b_min) 
-            uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
-            for (uint64_t local_num_self = 0; local_num_self < num_local_areas; local_num_self++) {
-
-                // global_swap_peer = OR_i (local_num_selfのb_delta_i桁目)をa_delta_i桁目にする
-                uint64_t global_swap_peer = 0;
-                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                    // a_delta_i
-                    int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
-                    // b_delta_i
-                    int const swap_target_local_delta = swap_target_local_list[target_num] - swap_target_local_min;
-                    global_swap_peer |=
-                        // local_num_selfのb_delta_i桁目
-                        ((local_num_self >> swap_target_local_delta) & 1)
-                        // をa_delta_i桁目にする
-                        << swap_target_global_delta;
+            swap_target_global_list.resize(0);
+            swap_target_local_list.resize(0);
+            for (int tqni = 0; tqni < target_qubit_num_physical_list.size(); tqni++) {
+                auto const tqn_i = target_qubit_num_physical_list[tqni];
+                if (tqn_i >= num_qubits_local) {
+                    swap_target_global_list.push_back(tqn_i);
+                    int const swap_target_local = num_qubits_local - swap_target_global_list.size();
+                    swap_target_local_list.push_back(swap_target_local);
+                    target_qubit_num_physical_list[tqni] = swap_target_local;
+                    // fprintf(stderr, "[debug] target_qubit_num_physical=%d swap_target_local=%d\n", tqn_i, swap_target_local);
                 }
-
-                uint64_t const proc_num_peer = global_swap_peer | global_nonswap_self;
-
-                // send & recv
-                if (proc_num_peer == proc_num) { continue; }
-                // CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
-                // CHECK_NCCL(ncclRecv, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
-                bool is_peer_greater = proc_num_peer > proc_num;
-                for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
-                    CHECK_NCCL(ncclGroupStart);
-                    for (int send_recv = 0; send_recv < 2; send_recv++) {
-                        if (send_recv ^ is_peer_greater) {
-                            CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
-                        } else {
-                            CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
-                        }
-                    }
-                    CHECK_NCCL(ncclGroupEnd);
-                    CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(my_complex_t), cudaMemcpyDeviceToDevice, stream);
-                }
-
             }
+            int const num_swap_qubits = swap_target_global_list.size();
 
-            // swap_target_global_logical_list[:] = perm_p2l[swap_target_global_list[:]]
-            // swap_target_local_logical_list[:] = perm_p2l[swap_target_local_list[:]]
-            swap_target_local_logical_list.resize(num_swap_qubits);
-            swap_target_global_logical_list.resize(num_swap_qubits);
-            for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                swap_target_local_logical_list[target_num] = perm_p2l[swap_target_local_list[target_num]];
-                swap_target_global_logical_list[target_num] = perm_p2l[swap_target_global_list[target_num]];
-            }
-
-            // update p2l & l2p
-            // perm_p2l[swap_target_global_list[:]] = swap_target_local_logical_list[:]
-            // perm_p2l[swap_target_local_list[:]] = swap_target_global_logical_list[:]
-            // perm_l2p[swap_target_global_logical_list[:]] = swap_target_local_list[:]
-            // perm_l2p[swap_target_local_logical_list[:]] = swap_target_global_list[:]
-
-            for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                perm_p2l[swap_target_global_list[target_num]] = swap_target_local_logical_list[target_num];
-                perm_p2l[swap_target_local_list[target_num]] = swap_target_global_logical_list[target_num];
-                perm_l2p[swap_target_global_logical_list[target_num]] = swap_target_local_list[target_num];
-                perm_l2p[swap_target_local_logical_list[target_num]] = swap_target_global_list[target_num];
-            }
-
-            // target_qubit_num_physical = swap_target_local;
-
-        }
-
-        /* check whether proc_num is under control condition */
-        bool control_condition = true;
-
-        positive_control_qubit_num_physical_list.resize(positive_control_qubit_num_logical_list.size());
-        positive_control_qubit_num_physical_global_list.resize(0);
-        positive_control_qubit_num_physical_local_list.resize(0);
-
-        for (int cqni = 0; cqni < positive_control_qubit_num_logical_list.size(); cqni++) {
-            auto const positive_control_qubit_num_physical = perm_l2p[positive_control_qubit_num_logical_list[cqni]];
-            positive_control_qubit_num_physical_list[cqni] = positive_control_qubit_num_physical;
-            if (positive_control_qubit_num_physical >= num_qubits_local) {
-                positive_control_qubit_num_physical_global_list.push_back(positive_control_qubit_num_physical);
-                if (!(1 & (proc_num >> (positive_control_qubit_num_physical - num_qubits_local))) /* 0 */ ) {
-                    control_condition = false;
-                }
-            } else {
-                positive_control_qubit_num_physical_local_list.push_back(positive_control_qubit_num_physical);
-            }
-            
-        }
-
-        negative_control_qubit_num_physical_list.resize(negative_control_qubit_num_logical_list.size());
-        negative_control_qubit_num_physical_global_list.resize(0);
-        negative_control_qubit_num_physical_local_list.resize(0);
-
-        for (int cqni = 0; cqni < negative_control_qubit_num_logical_list.size(); cqni++) {
-            auto const negative_control_qubit_num_physical = perm_l2p[negative_control_qubit_num_logical_list[cqni]];
-            negative_control_qubit_num_physical_list[cqni] = negative_control_qubit_num_physical;
-            if (negative_control_qubit_num_physical >= num_qubits_local) {
-                negative_control_qubit_num_physical_global_list.push_back(negative_control_qubit_num_physical);
-                if (1 & (proc_num >> (negative_control_qubit_num_physical - num_qubits_local)) /* 1 */ ) {
-                    control_condition = false;
-                }
-            } else {
-                negative_control_qubit_num_physical_local_list.push_back(negative_control_qubit_num_physical);
-            }
-        }
-
-        if (control_condition) {
-
-            uint64_t const qkiqn_size = qkiqn_needed_size(
-                positive_control_qubit_num_physical_list.size(),
-                negative_control_qubit_num_physical_list.size(),
-                target_qubit_num_physical_list.size()
-            );
-            if (qkiqn_size > QCS_KERNEL_INPUT_MAX_SIZE) {
-                std::vector<char> runtime_error_message(256);
-                sprintf(runtime_error_message.data(), "qkiqn_size(%llu) > QCS_KERNEL_INPUT_MAX_SIZE(%llu)", qkiqn_size, QCS_KERNEL_INPUT_MAX_SIZE);
-                throw std::runtime_error(runtime_error_message.data());
-            }
-            qcs_kernel_input_host_buffer.resize(qkiqn_size);
-            qcs_kernel_input_qnlist_struct* const qcs_kernel_input_host = (qcs_kernel_input_qnlist_struct*)qcs_kernel_input_host_buffer.data();
-
-            qcs_kernel_input_host->num_positive_control_qubits = positive_control_qubit_num_physical_local_list.size();
-            qcs_kernel_input_host->num_negative_control_qubits = negative_control_qubit_num_physical_local_list.size();
-            qcs_kernel_input_host->num_target_qubits = target_qubit_num_physical_list.size();
-
-            auto positive_control_qubit_num_list_kernel_arg = qkiqn_get_positive_control_qubit_num_list(qcs_kernel_input_host);
-            for (int pcqi = 0; pcqi < positive_control_qubit_num_physical_local_list.size(); pcqi++) {
-                positive_control_qubit_num_list_kernel_arg[pcqi] = positive_control_qubit_num_physical_local_list[pcqi];
-            }
-
-            // auto negative_control_qubit_num_list_kernel_arg = qkiqn_get_negative_control_qubit_num_list(qcs_kernel_input_host);
-            // for (int ncqi = 0; ncqi < negative_control_qubit_num_physical_local_list.size(); ncqi++) {
-            //     negative_control_qubit_num_list_kernel_arg[ncqi] = negative_control_qubit_num_physical_local_list[ncqi];
+            // std::vector<int> swap_target_local_list(num_swap_qubits);
+            // swap_target_local_list.resize(num_swap_qubits);
+            // for (int sti = 0; sti < num_swap_qubits; sti++) {
+            //     swap_target_local_list[sti] = num_qubits_local - 1 - sti;
             // }
 
-            auto target_qubit_num_list_kernel_arg = qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_host);
-            for (int tqi = 0; tqi < target_qubit_num_physical_list.size(); tqi++) {
-                target_qubit_num_list_kernel_arg[tqi] = target_qubit_num_physical_list[tqi];
+            // int target_qubit_num_physical = perm_l2p[target_qubit_num_logical];
+
+            // // if(proc_num==0) fprintf(stderr, "[debug] target_qubit_num_logical=%d target_qubit_num_physical=%d\n", target_qubit_num_logical, target_qubit_num_physical);
+            // // MPI_Barrier(MPI_COMM_WORLD);
+
+            /* target qubits is global */
+            // if (target_qubit_num_physical >= num_qubits_local) {
+            if (swap_target_global_list.size() > 0) {
+
+                // int const* const swap_target_global_list = &target_qubit_num_physical;
+                // int const swap_target_local = num_qubits - log_num_procs - 1;
+                // int const* const swap_target_local_list = &swap_target_local;
+                // int const num_targets = 1;
+
+                // b_min
+                int const swap_target_local_min = *std::min_element(swap_target_local_list.data(), swap_target_local_list.data() + num_swap_qubits);
+
+                uint64_t const local_buf_length = UINT64_C(1) << swap_target_local_min;
+                uint64_t swap_buffer_length = swap_buffer_total_length;
+                if (swap_buffer_length > local_buf_length) {
+                    swap_buffer_length = local_buf_length;
+                }
+
+                // generate a mask for generating global_nonswap_self
+                uint64_t global_swap_self_mask = 0;
+                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+                    // a_delta = a – n_local
+                    int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
+                    global_swap_self_mask |= (UINT64_C(1) << swap_target_global_delta);
+                }
+
+                // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
+                uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
+
+                // 1<<(num_local_qubits - b_min) 
+                uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
+                for (uint64_t local_num_self = 0; local_num_self < num_local_areas; local_num_self++) {
+
+                    // global_swap_peer = OR_i (local_num_selfのb_delta_i桁目)をa_delta_i桁目にする
+                    uint64_t global_swap_peer = 0;
+                    for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+                        // a_delta_i
+                        int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
+                        // b_delta_i
+                        int const swap_target_local_delta = swap_target_local_list[target_num] - swap_target_local_min;
+                        global_swap_peer |=
+                            // local_num_selfのb_delta_i桁目
+                            ((local_num_self >> swap_target_local_delta) & 1)
+                            // をa_delta_i桁目にする
+                            << swap_target_global_delta;
+                    }
+
+                    uint64_t const proc_num_peer = global_swap_peer | global_nonswap_self;
+
+                    // send & recv
+                    if (proc_num_peer == proc_num) { continue; }
+                    // CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
+                    // CHECK_NCCL(ncclRecv, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
+                    bool is_peer_greater = proc_num_peer > proc_num;
+                    for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
+                        CHECK_NCCL(ncclGroupStart);
+                        for (int send_recv = 0; send_recv < 2; send_recv++) {
+                            if (send_recv ^ is_peer_greater) {
+                                CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                            } else {
+                                CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                            }
+                        }
+                        CHECK_NCCL(ncclGroupEnd);
+                        CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(my_complex_t), cudaMemcpyDeviceToDevice, stream);
+                    }
+
+                }
+
+                // swap_target_global_logical_list[:] = perm_p2l[swap_target_global_list[:]]
+                // swap_target_local_logical_list[:] = perm_p2l[swap_target_local_list[:]]
+                swap_target_local_logical_list.resize(num_swap_qubits);
+                swap_target_global_logical_list.resize(num_swap_qubits);
+                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+                    swap_target_local_logical_list[target_num] = perm_p2l[swap_target_local_list[target_num]];
+                    swap_target_global_logical_list[target_num] = perm_p2l[swap_target_global_list[target_num]];
+                }
+
+                // update p2l & l2p
+                // perm_p2l[swap_target_global_list[:]] = swap_target_local_logical_list[:]
+                // perm_p2l[swap_target_local_list[:]] = swap_target_global_logical_list[:]
+                // perm_l2p[swap_target_global_logical_list[:]] = swap_target_local_list[:]
+                // perm_l2p[swap_target_local_logical_list[:]] = swap_target_global_list[:]
+
+                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+                    perm_p2l[swap_target_global_list[target_num]] = swap_target_local_logical_list[target_num];
+                    perm_p2l[swap_target_local_list[target_num]] = swap_target_global_logical_list[target_num];
+                    perm_l2p[swap_target_global_logical_list[target_num]] = swap_target_local_list[target_num];
+                    perm_l2p[swap_target_local_logical_list[target_num]] = swap_target_global_list[target_num];
+                }
+
+                // target_qubit_num_physical = swap_target_local;
+
             }
 
-            auto const num_operand_qubits =
-                positive_control_qubit_num_physical_local_list.size()
-                + negative_control_qubit_num_physical_local_list.size()
-                + target_qubit_num_physical_list.size();
+            /* check whether proc_num is under control condition */
+            bool control_condition = true;
 
-            /* get sorted operand qubits */
-            operand_qubit_num_list.resize(0);
-            operand_qubit_num_list.reserve(num_operand_qubits);
-            operand_qubit_num_list.insert(operand_qubit_num_list.end(), positive_control_qubit_num_physical_local_list.begin(), positive_control_qubit_num_physical_local_list.end());
-            operand_qubit_num_list.insert(operand_qubit_num_list.end(), negative_control_qubit_num_physical_local_list.begin(), negative_control_qubit_num_physical_local_list.end());
-            operand_qubit_num_list.insert(operand_qubit_num_list.end(), target_qubit_num_physical_list.begin(), target_qubit_num_physical_list.end());
+            positive_control_qubit_num_physical_list.resize(positive_control_qubit_num_logical_list.size());
+            positive_control_qubit_num_physical_global_list.resize(0);
+            positive_control_qubit_num_physical_local_list.resize(0);
 
-            std::sort(operand_qubit_num_list.begin(), operand_qubit_num_list.end()); /* ascending order */
-
-            auto qubit_num_list_sorted_kernel_arg = qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_host);
-            for (int qni = 0; qni < operand_qubit_num_list.size(); qni++) {
-                qubit_num_list_sorted_kernel_arg[qni] = operand_qubit_num_list[qni];
+            for (int cqni = 0; cqni < positive_control_qubit_num_logical_list.size(); cqni++) {
+                auto const positive_control_qubit_num_physical = perm_l2p[positive_control_qubit_num_logical_list[cqni]];
+                positive_control_qubit_num_physical_list[cqni] = positive_control_qubit_num_physical;
+                if (positive_control_qubit_num_physical >= num_qubits_local) {
+                    positive_control_qubit_num_physical_global_list.push_back(positive_control_qubit_num_physical);
+                    if (!(1 & (proc_num >> (positive_control_qubit_num_physical - num_qubits_local))) /* 0 */ ) {
+                        control_condition = false;
+                    }
+                    // fprintf(stderr, "debug: proc_num=%d ctrl(global)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
+                } else {
+                    positive_control_qubit_num_physical_local_list.push_back(positive_control_qubit_num_physical);
+                    // fprintf(stderr, "debug: proc_num=%d ctrl(local)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
+                }
+                
             }
 
-            CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_input_constant_addr, qcs_kernel_input_host, qkiqn_size, cudaMemcpyHostToDevice, stream);
+            negative_control_qubit_num_physical_list.resize(negative_control_qubit_num_logical_list.size());
+            negative_control_qubit_num_physical_global_list.resize(0);
+            negative_control_qubit_num_physical_local_list.resize(0);
 
-            uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size - num_operand_qubits));
+            for (int cqni = 0; cqni < negative_control_qubit_num_logical_list.size(); cqni++) {
+                auto const negative_control_qubit_num_physical = perm_l2p[negative_control_qubit_num_logical_list[cqni]];
+                negative_control_qubit_num_physical_list[cqni] = negative_control_qubit_num_physical;
+                if (negative_control_qubit_num_physical >= num_qubits_local) {
+                    negative_control_qubit_num_physical_global_list.push_back(negative_control_qubit_num_physical);
+                    if (1 & (proc_num >> (negative_control_qubit_num_physical - num_qubits_local)) /* 1 */ ) {
+                        control_condition = false;
+                    }
+                    // fprintf(stderr, "debug: proc_num=%d negctrl(global)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
+                } else {
+                    negative_control_qubit_num_physical_local_list.push_back(negative_control_qubit_num_physical);
+                    // fprintf(stderr, "debug: proc_num=%d negctrl(local)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
+                }
+            }
 
-            // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
-            cuda_gate_cn_h<<<num_blocks_gateop, block_size, 0, stream>>>();
+            if (control_condition) {
 
-        } /* control_condition */
+                uint64_t const qkiqn_size = qkiqn_needed_size(
+                    positive_control_qubit_num_physical_list.size(),
+                    negative_control_qubit_num_physical_list.size(),
+                    target_qubit_num_physical_list.size()
+                );
+                if (qkiqn_size > QCS_KERNEL_INPUT_MAX_SIZE) {
+                    std::vector<char> runtime_error_message(256);
+                    sprintf(runtime_error_message.data(), "qkiqn_size(%llu) > QCS_KERNEL_INPUT_MAX_SIZE(%llu)", qkiqn_size, QCS_KERNEL_INPUT_MAX_SIZE);
+                    throw std::runtime_error(runtime_error_message.data());
+                }
+                qcs_kernel_input_host_buffer.resize(qkiqn_size);
+                qcs_kernel_input_qnlist_struct* const qcs_kernel_input_host = (qcs_kernel_input_qnlist_struct*)qcs_kernel_input_host_buffer.data();
 
-        // } /* target_qubit_num_logical loop */
+                qcs_kernel_input_host->num_positive_control_qubits = positive_control_qubit_num_physical_local_list.size();
+                qcs_kernel_input_host->num_negative_control_qubits = negative_control_qubit_num_physical_local_list.size();
+                qcs_kernel_input_host->num_target_qubits = target_qubit_num_physical_list.size();
 
-        CHECK_CUDA(cudaEventRecord, event_2, stream);
+                auto positive_control_qubit_num_list_kernel_arg = qkiqn_get_positive_control_qubit_num_list(qcs_kernel_input_host);
+                for (int pcqi = 0; pcqi < positive_control_qubit_num_physical_local_list.size(); pcqi++) {
+                    positive_control_qubit_num_list_kernel_arg[pcqi] = positive_control_qubit_num_physical_local_list[pcqi];
+                }
 
-        CHECK_CUDA(cudaStreamSynchronize, stream);
+                // auto negative_control_qubit_num_list_kernel_arg = qkiqn_get_negative_control_qubit_num_list(qcs_kernel_input_host);
+                // for (int ncqi = 0; ncqi < negative_control_qubit_num_physical_local_list.size(); ncqi++) {
+                //     negative_control_qubit_num_list_kernel_arg[ncqi] = negative_control_qubit_num_physical_local_list[ncqi];
+                // }
 
-        CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-        elapsed_ms = elapsed_ms_2;
-        if (proc_num == 0) {
-            fprintf(stderr, "[info] elapsed_gpu=%f\n", elapsed_ms * 1e-3);
-            fprintf(stdout, "%lf\n", elapsed_ms * 1e-3);
+                auto target_qubit_num_list_kernel_arg = qkiqn_get_target_qubit_num_list(qcs_kernel_input_host);
+                for (int tqi = 0; tqi < target_qubit_num_physical_list.size(); tqi++) {
+                    target_qubit_num_list_kernel_arg[tqi] = target_qubit_num_physical_list[tqi];
+                }
+
+                auto const num_operand_qubits =
+                    positive_control_qubit_num_physical_local_list.size()
+                    + negative_control_qubit_num_physical_local_list.size()
+                    + target_qubit_num_physical_list.size();
+
+                /* get sorted operand qubits */
+                operand_qubit_num_list.resize(0);
+                operand_qubit_num_list.reserve(num_operand_qubits);
+                operand_qubit_num_list.insert(operand_qubit_num_list.end(), positive_control_qubit_num_physical_local_list.begin(), positive_control_qubit_num_physical_local_list.end());
+                operand_qubit_num_list.insert(operand_qubit_num_list.end(), negative_control_qubit_num_physical_local_list.begin(), negative_control_qubit_num_physical_local_list.end());
+                operand_qubit_num_list.insert(operand_qubit_num_list.end(), target_qubit_num_physical_list.begin(), target_qubit_num_physical_list.end());
+
+                std::sort(operand_qubit_num_list.begin(), operand_qubit_num_list.end()); /* ascending order */
+
+                auto qubit_num_list_sorted_kernel_arg = qkiqn_get_operand_qubit_num_list_sorted(qcs_kernel_input_host);
+                for (int qni = 0; qni < operand_qubit_num_list.size(); qni++) {
+                    qubit_num_list_sorted_kernel_arg[qni] = operand_qubit_num_list[qni];
+                }
+
+                // for (int proc_num_active = 0; proc_num_active < num_procs; proc_num_active++) {
+                //     if (proc_num_active==proc_num) {
+                //         for (int qni = 0; qni < operand_qubit_num_list.size(); qni++) {
+                //             fprintf(stderr, "debug: operand_qubit_num_list[%d]=%d\n", qni, operand_qubit_num_list[qni]);
+                //         }
+                //     }
+                //     if (proc_num_active != num_procs - 1) {
+                //         MPI_Barrier(MPI_COMM_WORLD); 
+                //     }
+                // }
+
+                CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_input_constant_addr, qcs_kernel_input_host, qkiqn_size, cudaMemcpyHostToDevice, stream);
+
+                uint64_t const log_num_threads = num_qubits_local - num_operand_qubits;
+                uint64_t log_block_size_gateop;
+                uint64_t num_blocks_gateop;
+
+                if (log_block_size > log_num_threads) {
+                    log_block_size_gateop = log_num_threads;
+                    num_blocks_gateop = 1;
+                } else {
+                    log_block_size_gateop = log_block_size;
+                    num_blocks_gateop = ((uint64_t)1) << (log_num_threads - log_block_size);
+                }
+
+                uint64_t const block_size_gateop = 1ULL << log_block_size_gateop;
+
+                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size - num_operand_qubits));
+                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size - num_operand_qubits));
+
+                // fprintf(stderr, "debug: num_blocks_gateop=%llu\n", num_blocks_gateop);
+                // fprintf(stderr, "debug: block_size_gateop=%llu\n", block_size_gateop);
+
+                // printf("kernel: cuda_gate_cn_x\n");
+                // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
+                cuda_gate_cn_x<<<num_blocks_gateop, block_size_gateop, 0, stream>>>();
+                // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
+
+            } /* control_condition */
+
+            // } /* target_qubit_num_logical loop */
+
+            CHECK_CUDA(cudaEventRecord, event_2, stream);
+
+            CHECK_CUDA(cudaStreamSynchronize, stream);
+
+            CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
+            MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+            elapsed_ms = elapsed_ms_2;
+            if (proc_num == 0) {
+                fprintf(stderr, "[info] elapsed_gpu=%f\n", elapsed_ms * 1e-3);
+                fprintf(stdout, "%lf\n", elapsed_ms * 1e-3);
+            }
+
         }
 
     }
@@ -831,12 +989,20 @@ int main(int argc, char** argv) {
 
         CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
 
+        // if (0 == proc_num) {
+        //     FILE* const fp = fopen("statevector_output.bin", "wb");
+        //     ftruncate(fileno(fp), num_states * sizeof(my_complex_t));
+        // }
+        // MPI_Barrier(MPI_COMM_WORLD);
+
         for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
             if (proc_num_active == proc_num) {
-                FILE* const fp = fopen("statevector_output.bin", "ab");
+                FILE* const fp = fopen("statevector_output.bin", (proc_num==0)? "wb": "rb+");
+                
                 if (fp == NULL) {
                     throw std::runtime_error("open failed");
                 }
+
                 for (uint64_t state_num_physical_local = 0; state_num_physical_local < num_states_local; state_num_physical_local++) {
                     uint64_t const state_num_physical = state_num_physical_local | (((uint64_t)proc_num) << num_qubits_local);
                     uint64_t state_num_logical = 0;
@@ -859,11 +1025,80 @@ int main(int argc, char** argv) {
                         throw std::runtime_error(error_buf.data());
                     }
                 }
+                fflush(fp);
                 fclose(fp);
+                fsync(fileno(fp));
             }
             MPI_Barrier(MPI_COMM_WORLD);
         }
 
+    }
+
+
+    if (calc_checksum) {
+        if (proc_num==0) {
+            fprintf(stderr, "[info] gathering state data\n");
+
+            EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+            if (!mdctx) {
+                perror("EVP_MD_CTX_new failed");
+                exit(1);
+            }
+        
+            if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
+                perror("EVP_DigestInit_ex failed");
+                EVP_MD_CTX_free(mdctx);
+                exit(1);
+            }
+
+            my_complex_t* state_data_host = (my_complex_t*)malloc(num_states * sizeof(my_complex_t));
+            DEFER_FUNC(free, state_data_host);
+
+            CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(my_complex_t), cudaMemcpyDeviceToHost, stream);
+            for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
+                MPI_Status mpi_status;
+                MPI_Recv(&state_data_host[peer_proc_num * num_states_local], num_states_local * 2, MPI_DOUBLE, peer_proc_num, 0, MPI_COMM_WORLD, &mpi_status);
+            }
+            CHECK_CUDA(cudaStreamSynchronize, stream);
+
+            for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
+                int64_t state_num_physical = 0;
+                for(int qubit_num_logical = 0; qubit_num_logical < num_qubits; qubit_num_logical++) {
+                    int qubit_num_physical = perm_l2p[qubit_num_logical];
+                    state_num_physical = state_num_physical | (((state_num_logical >> qubit_num_logical) & 1) << qubit_num_physical);
+                }
+                // float int_values[2];
+                // int_values[0] = floor(10000000*state_data_host[state_num_physical].real());
+                // int_values[1] = floor(10000000*state_data_host[state_num_physical].imag());
+                // int_values[0] = state_data_host[state_num_physical].real();
+                // int_values[1] = state_data_host[state_num_physical].imag();
+                // &state_data_host[state_num_physical]
+                // sizeof(my_complex_t)
+                if (EVP_DigestUpdate(mdctx, &state_data_host[state_num_physical], sizeof(my_complex_t)) != 1) {
+                    perror("EVP_DigestUpdate failed");
+                    EVP_MD_CTX_free(mdctx);
+                    exit(1);
+                }
+            }
+
+            std::vector<unsigned char> evp_hash(EVP_MAX_MD_SIZE); // [EVP_MAX_MD_SIZE];
+            unsigned int evp_hash_len;
+            if (EVP_DigestFinal_ex(mdctx, evp_hash.data(), &evp_hash_len) != 1) {
+                perror("EVP_DigestFinal_ex failed");
+                EVP_MD_CTX_free(mdctx);
+                exit(1);
+            }
+
+            fprintf(stderr, "[info] checksum: ");
+            for (unsigned int i = 0; i < evp_hash_len; i++) {
+                fprintf(stderr, "%02x", evp_hash[i]);
+            }
+            fprintf(stderr, "\n");
+
+            EVP_MD_CTX_free(mdctx);
+        } else {
+            MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+        }
     }
 
     MPI_Finalize();
