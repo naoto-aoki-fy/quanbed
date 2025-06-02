@@ -26,7 +26,7 @@
 #include <nccl.h>
 #include <openssl/evp.h>
 
-#include "mynccl.hpp"
+#include "mynccl.h"
 
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"

@@ -1,4 +1,4 @@
-#include "mynccl.hpp"
+#include "mynccl.h"
 
 #include <nccl.h>
 
@@ -61,16 +61,14 @@ struct myncclCommStruct {
 
 static myncclCommStruct myncclCommStructPrivate;
 
-cudaError_t myncclCudaMalloc(void **devPtr, size_t size) {
+static cudaError_t myncclCudaMalloc(void **devPtr, size_t size) {
     cudaError_t const ret = myncclCommStructPrivate.origCudaMalloc(devPtr, size);
     myncclCommStructPrivate.pointer_list.push_back((uint64_t)*devPtr);
     return ret;
 }
 
-
 static inline uint64_t myncclSizeofNcclDataType(int datatype) {
     switch (datatype) {
-        // case ncclChar: return sizeof(char);
         case ncclInt8: return sizeof(int8_t);
         case ncclUint8: return sizeof(uint8_t);
         case ncclInt32: return sizeof(int32_t);
@@ -81,8 +79,6 @@ static inline uint64_t myncclSizeofNcclDataType(int datatype) {
         case ncclFloat32: return sizeof(float);
         case ncclFloat64: return sizeof(double);
         case ncclBfloat16: return sizeof(__nv_bfloat16);
-        // case ncclHalf: return sizeof(__half);
-        // case ncclBool: return sizeof(bool);
         default:
             throw datatype;
             return 0;
@@ -99,7 +95,7 @@ void* myncclGetClosestPointer(void* pointer_input, uint64_t* offset) {
     uint64_t num_ptrs = myncclCommStructPrivate.pointer_list.size();
     uint64_t distance_closest = (uint64_t)(-1);
     uint64_t pointer_closest = 0;
-    for(uint64_t ptr_num = 0; ptr_num < num_ptrs; ptr_num++) {
+    for (uint64_t ptr_num = 0; ptr_num < num_ptrs; ptr_num++) {
         uint64_t pointer = myncclCommStructPrivate.pointer_list[ptr_num];
         // fprintf(stderr, "[%d] pointer=%p pointer_input=%p\n", __LINE__, pointer, pointer_input);
         if ((uint64_t)pointer_input < pointer) {
@@ -116,9 +112,6 @@ void* myncclGetClosestPointer(void* pointer_input, uint64_t* offset) {
     }
     return (void*)pointer_closest;
 }
-
-
-
 
 static ncclResult_t myncclCommInitRank(ncclComm_t* comm, int ndev, ncclUniqueId nccl_id, int rank) {
     *comm = (ncclComm_t)(void*)&myncclCommStructPrivate;
@@ -232,7 +225,7 @@ static ncclResult_t myncclRecv(void* recvbuff, uint64_t count, int datatype, int
     return ncclSuccess;
 }
 
-void myncclPatch() {
+extern "C" void myncclPatch() {
     myncclCommStructPrivate.origCudaMalloc = ::cudaMalloc;
     myncclCommStructPrivate.jmpPatchCudaMalloc = cdl_jmp_attach((void**)&myncclCommStructPrivate.origCudaMalloc, (void**)myncclCudaMalloc);
 
