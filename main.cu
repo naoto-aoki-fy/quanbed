@@ -26,8 +26,6 @@
 #include <nccl.h>
 #include <openssl/evp.h>
 
-// #include "mynccl.h"
-
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"
 #include "reorder_macro.h"
@@ -36,9 +34,6 @@
 #include "check_curand.hpp"
 #include "check_nccl.hpp"
 // #include "check_nvshmemx.hpp"
-
-#define SQRT2 (1.41421356237309504880168872420969807856967187537694)
-#define INV_SQRT2 (1.0/SQRT2)
 
 typedef double my_float_t;
 typedef cuda::std::complex<my_float_t> my_complex_t;
@@ -234,8 +229,8 @@ struct cn_h {
         my_complex_t const amp_state_0 = qcs_kernel_common_constant.state_data_device[index_state_0];
         my_complex_t const amp_state_1 = qcs_kernel_common_constant.state_data_device[index_state_1];
 
-        qcs_kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
-        qcs_kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
+        qcs_kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * M_SQRT1_2;
+        qcs_kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * M_SQRT1_2;
 
     }
 };
@@ -322,8 +317,8 @@ struct hadamard {
         my_complex_t const amp_state_0 = qcs_kernel_common_constant.state_data_device[index_state_0];
         my_complex_t const amp_state_1 = qcs_kernel_common_constant.state_data_device[index_state_1];
 
-        qcs_kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * INV_SQRT2;
-        qcs_kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * INV_SQRT2;
+        qcs_kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * M_SQRT1_2;
+        qcs_kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * M_SQRT1_2;
 
     }
 };
