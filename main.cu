@@ -45,8 +45,8 @@ typedef cuda::std::complex<my_float_t> my_complex_t;
 
 template<typename KernelType, typename... Args>
 cudaError_t qcsCudaLaunchKernel(KernelType func, dim3 gridDim, dim3 blockDim, size_t sharedMem, cudaStream_t stream, Args... args) {
-    std::array<void*, sizeof...(Args)> ptrs = {(void*)&args...};
-    return cudaLaunchKernel((void const*)func, gridDim, blockDim, ptrs.data(), sharedMem, stream);
+    void* ptrs[] = {(void*)&args...};
+    return cudaLaunchKernel((void const*)func, gridDim, blockDim, ptrs, sharedMem, stream);
 }
 
 
