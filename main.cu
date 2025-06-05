@@ -110,15 +110,18 @@ namespace qcs {
         int num_qubits;
         qcs::complex_t* state_data_device;
     };
+
     __constant__ qcs::kernel_common_struct kernel_common_constant;
+
     __constant__ unsigned char kernel_input_constant[QCS_KERNEL_INPUT_MAX_SIZE];
+
     struct kernel_input_qnlist_struct {
         int num_target_qubits;
         int num_positive_control_qubits;
         int num_negative_control_qubits;
         int qubit_num_list[0];
 
-        inline static __host__ __device__ uint64_t needed_size(
+        static __host__ __device__ uint64_t needed_size(
             int const num_positive_control_qubits,
             int const num_negative_control_qubits,
             int const num_target_qubits
@@ -131,41 +134,50 @@ namespace qcs {
                 )
                 + sizeof(qcs::kernel_input_qnlist_struct);
         }
-        inline __host__ __device__ uint64_t byte_size() const {
+
+        __host__ __device__ uint64_t byte_size() const {
             return qcs::kernel_input_qnlist_struct::needed_size(this->num_positive_control_qubits, this->num_negative_control_qubits, this->num_target_qubits);
         }
-        inline __host__ __device__ int get_num_operand_qubits() const {
+
+        __host__ __device__ int get_num_operand_qubits() const {
             return
               this->num_positive_control_qubits 
               + this->num_negative_control_qubits
               + this->num_target_qubits;
         }
-        inline __host__ __device__ int const* get_operand_qubit_num_list_sorted() const {
+
+        __host__ __device__ int const* get_operand_qubit_num_list_sorted() const {
             return &this->qubit_num_list[0];
         }
-        inline __host__ __device__ int* get_operand_qubit_num_list_sorted() {
+
+        __host__ __device__ int* get_operand_qubit_num_list_sorted() {
             return &this->qubit_num_list[0];
         }
-        inline __host__ __device__ int const* get_positive_control_qubit_num_list() const {
+
+        __host__ __device__ int const* get_positive_control_qubit_num_list() const {
             return &this->qubit_num_list[this->get_num_operand_qubits()];
         }
-        inline __host__ __device__ int* get_positive_control_qubit_num_list() {
+
+        __host__ __device__ int* get_positive_control_qubit_num_list() {
             return &this->qubit_num_list[this->get_num_operand_qubits()];
         }
-        inline __host__ __device__ int const* get_target_qubit_num_list() const {
+
+        __host__ __device__ int const* get_target_qubit_num_list() const {
             return &this->qubit_num_list[
                 2 * this->num_positive_control_qubits
                 + this->num_negative_control_qubits
                 + this->num_target_qubits
             ];
         }
-        inline __host__ __device__ int* get_target_qubit_num_list() {
+
+        __host__ __device__ int* get_target_qubit_num_list() {
             return &this->qubit_num_list[
                 2 * this->num_positive_control_qubits
                 + this->num_negative_control_qubits
                 + this->num_target_qubits
             ];
         }
+
     };
 }
 
