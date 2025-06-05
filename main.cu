@@ -43,6 +43,13 @@
 typedef double my_float_t;
 typedef cuda::std::complex<my_float_t> my_complex_t;
 
+template<typename KernelType, typename... Args>
+cudaError_t qcsCudaLaunchKernel(KernelType func, dim3 gridDim, dim3 blockDim, size_t sharedMem, cudaStream_t stream, Args... args) {
+    std::array<void*, sizeof...(Args)> ptrs = {(void*)&args...};
+    return cudaLaunchKernel((void const*)func, gridDim, blockDim, ptrs.data(), sharedMem, stream);
+}
+
+
 __global__ void norm_sum_reduce_kernel(my_complex_t const* const input_global, my_float_t* const output_global)
 {
     extern __shared__ my_float_t sum_shared[];
@@ -489,7 +496,8 @@ int main(int argc, char** argv) {
         }
         // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
         // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
-        initstate_sequential_kernel<<<num_blocks_init, block_size_init, 0, stream>>>(state_data_device, proc_num);
+        CHECK_CUDA(qcsCudaLaunchKernel, initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
+
     }
 
     if (initstate_0) {
@@ -593,7 +601,7 @@ int main(int argc, char** argv) {
                 num_blocks_reduce = 1;
             }
 
-            norm_sum_reduce_kernel<<<num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream>>>(state_data_device, norm_sum_device);
+            CHECK_CUDA(qcsCudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
 
             data_length = num_blocks_reduce;
 
@@ -606,7 +614,7 @@ int main(int argc, char** argv) {
                     num_blocks_reduce = 1;
                 }
 
-                sum_reduce_kernel<<<num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream>>>(norm_sum_device, norm_sum_device);
+                CHECK_CUDA(qcsCudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(my_float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
 
                 data_length = num_blocks_reduce;
             }
@@ -638,7 +646,7 @@ int main(int argc, char** argv) {
 
         // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-        normalize_kernel<<<1ULL<<(num_qubits_local+1-log_block_size), block_size, 0, stream>>>((my_float_t*)(void*)state_data_device, normalize_factor);
+        CHECK_CUDA(qcsCudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size), block_size, 0, stream, (my_float_t*)(void*)state_data_device, normalize_factor);
         
 
         // fprintf(stderr, "[debug] line=%d\n", __LINE__);
@@ -958,7 +966,7 @@ int main(int argc, char** argv) {
 
                 // printf("kernel: cuda_gate_cn_x\n");
                 // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
-                cuda_gate_cn_x<<<num_blocks_gateop, block_size_gateop, 0, stream>>>();
+                CHECK_CUDA(qcsCudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
                 // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 
             } /* control_condition */
