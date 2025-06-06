@@ -35,6 +35,8 @@
 #include "check_nccl.hpp"
 // #include "check_nvshmemx.hpp"
 
+#include "mynccl.h"
+
 namespace qcs {
     typedef double float_t;
     typedef cuda::std::complex<qcs::float_t> complex_t;
@@ -324,7 +326,7 @@ __global__ void cuda_gate() {
 
 int main(int argc, char** argv) {
 
-    // myncclPatch();
+    myncclPatch();
 
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
@@ -337,7 +339,7 @@ int main(int argc, char** argv) {
     bool const initstate_use_curand = false;
     bool const initstate_use_data = false;
 
-    bool const output_statevector = true;
+    bool const output_statevector = false;
 
     if(initstate_use_curand+initstate_use_data+initstate_0+initstate_debug!=1) {
         throw std::runtime_error("specify only 1 item for initstate");
@@ -683,16 +685,16 @@ int main(int argc, char** argv) {
 
         CHECK_CUDA(cudaEventRecord, event_1, stream);
 
-        // for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
+        for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
         {
 
-            // std::vector<int> target_qubit_num_logical_list = {target_qubit_num_logical};
-            // std::vector<int> positive_control_qubit_num_logical_list = {};
-            // std::vector<int> negative_control_qubit_num_logical_list = {};
+            std::vector<int> target_qubit_num_logical_list = {target_qubit_num_logical};
+            std::vector<int> positive_control_qubit_num_logical_list = {};
+            std::vector<int> negative_control_qubit_num_logical_list = {};
 
-            std::vector<int> target_qubit_num_logical_list = {0};
-            std::vector<int> positive_control_qubit_num_logical_list = {1};
-            std::vector<int> negative_control_qubit_num_logical_list = {2};
+            // std::vector<int> target_qubit_num_logical_list = {0};
+            // std::vector<int> positive_control_qubit_num_logical_list = {1};
+            // std::vector<int> negative_control_qubit_num_logical_list = {2};
 
             // std::vector<int> target_qubit_num_physical_list(target_qubit_num_logical_list.size());
             target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());

@@ -64,8 +64,10 @@ struct myncclCommStruct {
 static myncclCommStruct myncclCommStructPrivate;
 
 static cudaError_t myncclCudaMalloc(void **devPtr, size_t size) {
+    fprintf(stderr, "debug: myncclCudaMalloc\n");
     cudaError_t const ret = myncclCommStructPrivate.origCudaMalloc(devPtr, size);
     myncclCommStructPrivate.pointer_list.push_back((uint64_t)*devPtr);
+    fprintf(stderr, "debug: myncclCudaMalloc ptr=%p\n", *devPtr);
     return ret;
 }
 
@@ -145,7 +147,7 @@ static ncclResult_t myncclGroupEnd() {
         // fprintf(stderr, "[debug] myncclCommStructPrivate.send_args[i].buff=%p\n", myncclCommStructPrivate.send_args[i].buff);
         myncclHandleOffset handle_offset;
         void* const buffer = myncclGetClosestPointer(myncclCommStructPrivate.send_args[i].buff, &handle_offset.offset);
-        // fprintf(stderr, "[debug] myncclGetClosestPointer=%p\n", buffer);
+        fprintf(stderr, "[debug] myncclGetClosestPointer=%p offset=%p\n", buffer, handle_offset.offset);
         CHECK_CUDA(cudaIpcGetMemHandle, &handle_offset.handle, buffer);
         CHECK_MPI(MPI_Isend, &handle_offset, sizeof(myncclHandleOffset), MPI_BYTE, myncclCommStructPrivate.send_args[i].peer, 0, MPI_COMM_WORLD, &myncclCommStructPrivate.mpi_request_list[mpi_request_idx]);
         mpi_request_idx++;
@@ -227,12 +229,16 @@ static ncclResult_t myncclRecv(void* recvbuff, uint64_t count, int datatype, int
     return ncclSuccess;
 }
 
+// __attribute__((constructor))
+// static void hoge() {
+//     fprintf(stderr, "debug: hello\n");
+// }
 
-// extern "C"
-__attribute__((constructor))
-static void myncclPatch() {
+extern "C"
+void myncclPatch() {
 
-    myncclCommStructPrivate.origCudaMalloc = ::cudaMalloc;
+    fprintf(stderr, "debug: ::cudaMalloc=%p\n", (cudaError_t (*)(void **, size_t))::cudaMalloc);
+    myncclCommStructPrivate.origCudaMalloc = (cudaError_t (*)(void **, size_t))::cudaMalloc;
     myncclCommStructPrivate.jmpPatchCudaMalloc = cdl_jmp_attach((void**)&myncclCommStructPrivate.origCudaMalloc, (void**)myncclCudaMalloc);
 
     myncclCommStructPrivate.origNcclGetUniqueId = (void*)ncclGetUniqueId;
