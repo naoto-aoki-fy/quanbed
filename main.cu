@@ -202,13 +202,24 @@ namespace qcs {
                 + sizeof_param;
         }
 
+        __host__ __device__ void const* get_parameter_pointer() const {
+            return (void const*)data;
+        }
+
         __host__ __device__ void* get_parameter_pointer() {
             return (void*)data;
         }
 
-        __host__ __device__ void const* get_parameter_pointer() const {
-            return (void const*)data;
+        template<typename ParamType>
+        __host__ __device__ ParamType const& get_parameter_reference() const {
+            return *(ParamType const*)(void const*)data;
         }
+
+        template<typename ParamType>
+        __host__ __device__ ParamType& get_parameter_reference() {
+            return *(ParamType*)(void*)data;
+        }
+
 
         __host__ __device__ uint64_t byte_size() const {
             return needed_size(this->num_positive_control_qubits, this->num_negative_control_qubits, this->num_target_qubits, this->sizeof_param);
