@@ -402,11 +402,9 @@ std::vector<int> target_qubit_num_logical_list;
 std::vector<int> positive_control_qubit_num_logical_list;
 std::vector<int> negative_control_qubit_num_logical_list;
 
-void ensure_local_qubits(
-    std::vector<int> const& target_qubit_num_logical_list,
-    std::vector<int> const& positive_control_qubit_num_logical_list,
-    std::vector<int> const& negative_control_qubit_num_logical_list
-) {
+bool control_condition;
+
+void ensure_local_qubits() {
     target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
     for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
         target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
@@ -513,6 +511,51 @@ void ensure_local_qubits(
 
         // target_qubit_num_physical = swap_target_local;
 
+    }
+};
+
+void check_control_qubit_num_physical() {
+
+    /* check whether proc_num is under control condition */
+    control_condition = true;
+
+    positive_control_qubit_num_physical_list.resize(positive_control_qubit_num_logical_list.size());
+    positive_control_qubit_num_physical_global_list.resize(0);
+    positive_control_qubit_num_physical_local_list.resize(0);
+
+    for (int cqni = 0; cqni < positive_control_qubit_num_logical_list.size(); cqni++) {
+        auto const positive_control_qubit_num_physical = perm_l2p[positive_control_qubit_num_logical_list[cqni]];
+        positive_control_qubit_num_physical_list[cqni] = positive_control_qubit_num_physical;
+        if (positive_control_qubit_num_physical >= num_qubits_local) {
+            positive_control_qubit_num_physical_global_list.push_back(positive_control_qubit_num_physical);
+            if (!(1 & (proc_num >> (positive_control_qubit_num_physical - num_qubits_local))) /* 0 */ ) {
+                control_condition = false;
+            }
+            // fprintf(stderr, "debug: proc_num=%d ctrl(global)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
+        } else {
+            positive_control_qubit_num_physical_local_list.push_back(positive_control_qubit_num_physical);
+            // fprintf(stderr, "debug: proc_num=%d ctrl(local)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
+        }
+
+    }
+
+    negative_control_qubit_num_physical_list.resize(negative_control_qubit_num_logical_list.size());
+    negative_control_qubit_num_physical_global_list.resize(0);
+    negative_control_qubit_num_physical_local_list.resize(0);
+
+    for (int cqni = 0; cqni < negative_control_qubit_num_logical_list.size(); cqni++) {
+        auto const negative_control_qubit_num_physical = perm_l2p[negative_control_qubit_num_logical_list[cqni]];
+        negative_control_qubit_num_physical_list[cqni] = negative_control_qubit_num_physical;
+        if (negative_control_qubit_num_physical >= num_qubits_local) {
+            negative_control_qubit_num_physical_global_list.push_back(negative_control_qubit_num_physical);
+            if (1 & (proc_num >> (negative_control_qubit_num_physical - num_qubits_local)) /* 1 */ ) {
+                control_condition = false;
+            }
+            // fprintf(stderr, "debug: proc_num=%d negctrl(global)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
+        } else {
+            negative_control_qubit_num_physical_local_list.push_back(negative_control_qubit_num_physical);
+            // fprintf(stderr, "debug: proc_num=%d negctrl(local)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
+        }
     }
 };
 
@@ -845,50 +888,13 @@ int main(int argc, char** argv) {
 
         for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
         {
+            target_qubit_num_logical_list = {target_qubit_num_logical};
+            positive_control_qubit_num_logical_list = {};
+            negative_control_qubit_num_logical_list = {};
 
-            ensure_local_qubits({target_qubit_num_logical}, {}, {});
+            ensure_local_qubits();
 
-            /* check whether proc_num is under control condition */
-            bool control_condition = true;
-
-            positive_control_qubit_num_physical_list.resize(positive_control_qubit_num_logical_list.size());
-            positive_control_qubit_num_physical_global_list.resize(0);
-            positive_control_qubit_num_physical_local_list.resize(0);
-
-            for (int cqni = 0; cqni < positive_control_qubit_num_logical_list.size(); cqni++) {
-                auto const positive_control_qubit_num_physical = perm_l2p[positive_control_qubit_num_logical_list[cqni]];
-                positive_control_qubit_num_physical_list[cqni] = positive_control_qubit_num_physical;
-                if (positive_control_qubit_num_physical >= num_qubits_local) {
-                    positive_control_qubit_num_physical_global_list.push_back(positive_control_qubit_num_physical);
-                    if (!(1 & (proc_num >> (positive_control_qubit_num_physical - num_qubits_local))) /* 0 */ ) {
-                        control_condition = false;
-                    }
-                    // fprintf(stderr, "debug: proc_num=%d ctrl(global)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
-                } else {
-                    positive_control_qubit_num_physical_local_list.push_back(positive_control_qubit_num_physical);
-                    // fprintf(stderr, "debug: proc_num=%d ctrl(local)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
-                }
-
-            }
-
-            negative_control_qubit_num_physical_list.resize(negative_control_qubit_num_logical_list.size());
-            negative_control_qubit_num_physical_global_list.resize(0);
-            negative_control_qubit_num_physical_local_list.resize(0);
-
-            for (int cqni = 0; cqni < negative_control_qubit_num_logical_list.size(); cqni++) {
-                auto const negative_control_qubit_num_physical = perm_l2p[negative_control_qubit_num_logical_list[cqni]];
-                negative_control_qubit_num_physical_list[cqni] = negative_control_qubit_num_physical;
-                if (negative_control_qubit_num_physical >= num_qubits_local) {
-                    negative_control_qubit_num_physical_global_list.push_back(negative_control_qubit_num_physical);
-                    if (1 & (proc_num >> (negative_control_qubit_num_physical - num_qubits_local)) /* 1 */ ) {
-                        control_condition = false;
-                    }
-                    // fprintf(stderr, "debug: proc_num=%d negctrl(global)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
-                } else {
-                    negative_control_qubit_num_physical_local_list.push_back(negative_control_qubit_num_physical);
-                    // fprintf(stderr, "debug: proc_num=%d negctrl(local)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
-                }
-            }
+            check_control_qubit_num_physical();
 
             if (control_condition) {
 
