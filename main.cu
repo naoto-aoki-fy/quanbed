@@ -368,8 +368,8 @@ int main(int argc, char** argv) {
             proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
 
     // int const gpu_id = proc_num;
-    // int const gpu_id = my_node_local_rank;
-    int const gpu_id = 0;
+    int const gpu_id = my_node_local_rank;
+    // int const gpu_id = 0;
     CHECK_CUDA(cudaSetDevice, gpu_id);
 
     ncclUniqueId nccl_id;
