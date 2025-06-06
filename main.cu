@@ -448,6 +448,9 @@ void ensure_local_qubits() {
         // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
         uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
 
+        CHECK_CUDA(cudaStreamSynchronize, stream);
+        CHECK_MPI(MPI_Barrier, MPI_COMM_WORLD);
+
         // 1<<(num_local_qubits - b_min) 
         uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
         for (uint64_t local_num_self = 0; local_num_self < num_local_areas; local_num_self++) {
