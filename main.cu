@@ -179,8 +179,8 @@ namespace qcs {
                 + this->num_target_qubits
             ];
         }
-
     };
+
 }
 
 struct cn_h {
@@ -324,34 +324,105 @@ __global__ void cuda_gate() {
     Gate::apply();
 }
 
-int main(int argc, char** argv) {
+namespace qcs {
+struct simulator {
 
-    myncclPatch();
+bool do_normalization;
+bool calc_checksum;
+bool use_unified_memory;
+
+bool initstate_debug;
+bool initstate_0;
+bool initstate_use_curand;
+bool initstate_use_data;
+
+bool output_statevector;
+
+float elapsed_ms, elapsed_ms_2;
+
+int num_procs, proc_num;
+
+int num_rand_areas;
+
+std::string my_hostname;
+int my_node_number;
+int my_node_local_rank;
+int node_count;
+
+int gpu_id;
+
+ncclUniqueId nccl_id;
+ncclComm_t nccl_comm;
+int nccl_rank;
+
+std::vector<int> perm_p2l;
+std::vector<int> perm_l2p;
+
+int num_samples;
+int rng_seed;
+
+int log_num_procs;
+int log_block_size;
+int target_qubit_num_begin;
+int target_qubit_num_end;
+
+cudaStream_t stream;
+cudaEvent_t event_1;
+cudaEvent_t event_2;
+
+uint64_t num_states;
+int num_qubits_local;
+uint64_t num_states_local;
+int block_size;
+
+qcs::complex_t* state_data_device;
+qcs::kernel_common_struct* qcs_kernel_common_constant_addr;
+qcs::kernel_common_struct qcs_kernel_common_host;
+qcs::kernel_input_qnlist_struct* qcs_kernel_input_constant_addr;
+std::vector<char> qcs_kernel_input_host_buffer;
+int log_swap_buffer_total_length;
+uint64_t swap_buffer_total_length;
+qcs::complex_t* swap_buffer;
+qcs::float_t* norm_sum_device;
+
+std::vector<int> operand_qubit_num_list;
+std::vector<int> target_qubit_num_physical_list;
+std::vector<int> swap_target_global_list;
+std::vector<int> swap_target_local_list;
+std::vector<int> swap_target_local_logical_list;
+std::vector<int> swap_target_global_logical_list;
+std::vector<int> positive_control_qubit_num_physical_list;
+std::vector<int> positive_control_qubit_num_physical_global_list;
+std::vector<int> positive_control_qubit_num_physical_local_list;
+std::vector<int> negative_control_qubit_num_physical_list;
+std::vector<int> negative_control_qubit_num_physical_global_list;
+std::vector<int> negative_control_qubit_num_physical_local_list;
+
+std::vector<int> target_qubit_num_logical_list;
+std::vector<int> positive_control_qubit_num_logical_list;
+std::vector<int> negative_control_qubit_num_logical_list;
+
+int main(int argc, char** argv) {
 
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
     // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
-    bool const do_normalization = false;
-    bool const calc_checksum = true;
-    bool const use_unified_memory = false;
+    do_normalization = false;
+    calc_checksum = true;
+    use_unified_memory = false;
 
-    bool const initstate_debug = true;
-    bool const initstate_0 = false;
-    bool const initstate_use_curand = false;
-    bool const initstate_use_data = false;
+    initstate_debug = true;
+    initstate_0 = false;
+    initstate_use_curand = false;
+    initstate_use_data = false;
 
-    bool const output_statevector = false;
+    output_statevector = true;
 
     if(initstate_use_curand+initstate_use_data+initstate_0+initstate_debug!=1) {
         throw std::runtime_error("specify only 1 item for initstate");
     }
 
-    float elapsed_ms, elapsed_ms_2;
-
-    setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
-
     MPI_Init(&argc, &argv);
 
-    int num_procs, proc_num;
     MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
 
@@ -359,56 +430,50 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[info] num_procs=%d\n", num_procs);
     }
 
-    int const num_rand_areas = 8 / num_procs;
-    // int const num_rand_areas = 1;
+    num_rand_areas = 8 / num_procs;
+    // num_rand_areas = 1;
 
-    auto [my_hostname, my_node_number, my_node_local_rank, node_count] = group_by_hostname(proc_num, num_procs);
+    group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
     fprintf(stderr,
             "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
             proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
 
-    // int const gpu_id = proc_num;
-    int const gpu_id = my_node_local_rank;
-    // int const gpu_id = 0;
+    // gpu_id = proc_num;
+    // gpu_id = my_node_local_rank;
+    gpu_id = 0;
     CHECK_CUDA(cudaSetDevice, gpu_id);
 
-    ncclUniqueId nccl_id;
     if (proc_num == 0) {
         CHECK_NCCL(ncclGetUniqueId, &nccl_id);
     }
 
-    ncclComm_t nccl_comm;
     MPI_Bcast(&nccl_id, sizeof(nccl_id), MPI_BYTE, 0, MPI_COMM_WORLD);
-    int nccl_rank = proc_num;
+    nccl_rank = proc_num;
     CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
     int const num_qubits = 14;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
 
-    std::vector<int> perm_p2l(num_qubits);
-    std::vector<int> perm_l2p(num_qubits);
+    perm_p2l.resize(num_qubits);
+    perm_l2p.resize(num_qubits);
 
     for(int qubit_num=0; qubit_num<num_qubits; qubit_num++) {
         perm_p2l[qubit_num] = qubit_num;
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    // int const num_samples = 64;
-    int const num_samples = 1;
-    int const rng_seed = 12345;
+    // num_samples = 64;
+    num_samples = 1;
+    rng_seed = 12345;
 
-    int const log_num_procs = log2_int(num_procs);
+    log_num_procs = log2_int(num_procs);
 
-    int const log_block_size = 9;
-    int const target_qubit_num_begin = 0;
-    int const target_qubit_num_end = num_qubits;
-    // int const target_qubit_num_end = 2;
+    log_block_size = 9;
+    target_qubit_num_begin = 0;
+    target_qubit_num_end = num_qubits;
+    // target_qubit_num_end = 2;
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size=%d\n", log_block_size); }
-
-    cudaStream_t stream;
-    cudaEvent_t event_1;
-    cudaEvent_t event_2;
 
     CHECK_CUDA(cudaStreamCreate, &stream);
     DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
@@ -419,17 +484,16 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
     DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
 
-    int64_t const num_states = ((int64_t)1) << ((int64_t)num_qubits);
+    num_states = 1ULL << num_qubits;
 
-    int const num_qubits_local = num_qubits - log_num_procs;
+    num_qubits_local = num_qubits - log_num_procs;
     
-    int64_t const num_states_local = ((int64_t)1) << ((int64_t)num_qubits_local);
-    int const block_size = 1 << log_block_size;
-    // int64_t const num_blocks = ((int64_t)1) << ((int64_t)(num_qubits_local - 1 - log_block_size));
+    num_states_local = 1ULL << num_qubits_local;
+    block_size = 1 << log_block_size;
+    // num_blocks = 1ULL << (num_qubits_local - 1 - log_block_size);
 
     if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
-    qcs::complex_t* state_data_device;
     if (use_unified_memory) {
         CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
         CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
@@ -438,31 +502,24 @@ int main(int argc, char** argv) {
     }
     DEFER_CHECK_CUDA(cudaFree, state_data_device);
 
-    qcs::kernel_common_struct* qcs_kernel_common_constant_addr;
     CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
-    
-    qcs::kernel_common_struct qcs_kernel_common_host;
+
     qcs_kernel_common_host.num_qubits = num_qubits;
     qcs_kernel_common_host.state_data_device = state_data_device;
     CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
 
-    qcs::kernel_input_qnlist_struct* qcs_kernel_input_constant_addr;
     CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
 
-    std::vector<char> qcs_kernel_input_host_buffer;
     // qcs::kernel_input_qnlist_struct* qcs_kernel_input_host = (qcs::kernel_input_qnlist_struct*)malloc(QCS_KERNEL_INPUT_SIZE);
     // DEFER_FUNC(free, qcs_kernel_input_host);
 
-
-    int const log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
-    // int const log_swap_buffer_total_length = num_qubits_local;
-    uint64_t const swap_buffer_total_length = UINT64_C(1) << log_swap_buffer_total_length;
-    qcs::complex_t* swap_buffer;
+    log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
+    // log_swap_buffer_total_length = num_qubits_local;
+    swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
     CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
     // CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
     DEFER_CHECK_CUDA(cudaFree, swap_buffer);
 
-    qcs::float_t* norm_sum_device;
     CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size) * sizeof(qcs::float_t));
     // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
 
@@ -489,7 +546,7 @@ int main(int argc, char** argv) {
 
     if (initstate_0) {
         if (proc_num == 0) {
-            qcs::float_t const one = 1;
+            qcs::complex_t const one = 1;
             CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::float_t), cudaMemcpyHostToDevice, stream);
         }
     }
@@ -576,8 +633,8 @@ int main(int argc, char** argv) {
         if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); } 
 
         {
-            int64_t data_length = num_states_local;
-            int64_t num_blocks_reduce;
+            uint64_t data_length = num_states_local;
+            uint64_t num_blocks_reduce;
             int block_size_reduce;
 
             if (data_length > block_size) {
@@ -666,19 +723,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[info] gpu_hadamard\n");
     }
 
-    std::vector<int> operand_qubit_num_list;
-    std::vector<int> target_qubit_num_physical_list;
-    std::vector<int> swap_target_global_list;
-    std::vector<int> swap_target_local_list;
-    std::vector<int> swap_target_local_logical_list;
-    std::vector<int> swap_target_global_logical_list;
-    std::vector<int> positive_control_qubit_num_physical_list;
-    std::vector<int> positive_control_qubit_num_physical_global_list;
-    std::vector<int> positive_control_qubit_num_physical_local_list;
-    std::vector<int> negative_control_qubit_num_physical_list;
-    std::vector<int> negative_control_qubit_num_physical_global_list;
-    std::vector<int> negative_control_qubit_num_physical_local_list;
-
     MPI_Barrier(MPI_COMM_WORLD);
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
@@ -688,15 +732,14 @@ int main(int argc, char** argv) {
         for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
         {
 
-            std::vector<int> target_qubit_num_logical_list = {target_qubit_num_logical};
-            std::vector<int> positive_control_qubit_num_logical_list = {};
-            std::vector<int> negative_control_qubit_num_logical_list = {};
+            target_qubit_num_logical_list = {target_qubit_num_logical};
+            positive_control_qubit_num_logical_list = {};
+            negative_control_qubit_num_logical_list = {};
 
-            // std::vector<int> target_qubit_num_logical_list = {0};
-            // std::vector<int> positive_control_qubit_num_logical_list = {1};
-            // std::vector<int> negative_control_qubit_num_logical_list = {2};
+            // target_qubit_num_logical_list = {0};
+            // positive_control_qubit_num_logical_list = {1};
+            // negative_control_qubit_num_logical_list = {2};
 
-            // std::vector<int> target_qubit_num_physical_list(target_qubit_num_logical_list.size());
             target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
             for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
                 target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
@@ -717,25 +760,8 @@ int main(int argc, char** argv) {
             }
             int const num_swap_qubits = swap_target_global_list.size();
 
-            // std::vector<int> swap_target_local_list(num_swap_qubits);
-            // swap_target_local_list.resize(num_swap_qubits);
-            // for (int sti = 0; sti < num_swap_qubits; sti++) {
-            //     swap_target_local_list[sti] = num_qubits_local - 1 - sti;
-            // }
-
-            // int target_qubit_num_physical = perm_l2p[target_qubit_num_logical];
-
-            // // if(proc_num==0) fprintf(stderr, "[debug] target_qubit_num_logical=%d target_qubit_num_physical=%d\n", target_qubit_num_logical, target_qubit_num_physical);
-            // // MPI_Barrier(MPI_COMM_WORLD);
-
             /* target qubits is global */
-            // if (target_qubit_num_physical >= num_qubits_local) {
             if (swap_target_global_list.size() > 0) {
-
-                // int const* const swap_target_global_list = &target_qubit_num_physical;
-                // int const swap_target_local = num_qubits - log_num_procs - 1;
-                // int const* const swap_target_local_list = &swap_target_local;
-                // int const num_targets = 1;
 
                 // b_min
                 int const swap_target_local_min = *std::min_element(swap_target_local_list.data(), swap_target_local_list.data() + num_swap_qubits);
@@ -779,8 +805,7 @@ int main(int argc, char** argv) {
 
                     // send & recv
                     if (proc_num_peer == proc_num) { continue; }
-                    // CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
-                    // CHECK_NCCL(ncclRecv, &state_data_device[local_num_self * local_buf_length], local_buf_length, ncclDouble, proc_num_peer, nccl_comm, stream);
+
                     bool is_peer_greater = proc_num_peer > proc_num;
                     for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
                         CHECK_NCCL(ncclGroupStart);
@@ -1101,4 +1126,13 @@ int main(int argc, char** argv) {
 
     return 0;
 
+};
+};
+}
+
+int main(int argc, char** argv) {
+    setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
+    myncclPatch();
+    qcs::simulator simulator;
+    return simulator.main(argc, argv);
 }

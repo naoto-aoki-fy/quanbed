@@ -4,17 +4,24 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <algorithm>
-#include <tuple>
 
 #include <mpi.h>
 
-auto group_by_hostname(int const rank, int const size) {
+void group_by_hostname(
+    int const rank,
+    int const size,
+    std::string& my_hostname,
+    int& my_node_number,
+    int& my_node_local_rank,
+    int& node_count
+) {
 
     // 各プロセスでホスト名を取得
     char hostname[MPI_MAX_PROCESSOR_NAME];
     int nameLen;
     MPI_Get_processor_name(hostname, &nameLen);
-    std::string my_hostname(hostname, nameLen);
+    my_hostname.assign(hostname, nameLen);
+    
 
     // rank 0で各プロセスのホスト名を受け取るためのバッファ（固定長）
     std::vector<char> gatheredBuffer;
@@ -31,7 +38,7 @@ auto group_by_hostname(int const rank, int const size) {
     // rank 0側で重複排除とノード番号の付与、さらにノード内のローカルランクを計算する
     std::vector<int> node_numbers; // 各プロセスが所属するノード番号
     std::vector<int> node_local_ranks; // 同一ノード内でのプロセス順（0から開始）
-    int node_count = 0;
+    node_count = 0;
     if (rank == 0) {
         // 集約された固定長文字列から std::vector<std::string> を作成
         std::vector<std::string> hostnames;
@@ -72,20 +79,13 @@ auto group_by_hostname(int const rank, int const size) {
     MPI_Bcast(&node_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     // 各プロセスに自分のノード番号とノード内のローカルランクを通知（scatter）
-    int my_node_number = -1;
-    int my_node_local_rank = -1;
+    my_node_number = -1;
+    my_node_local_rank = -1;
     MPI_Scatter((rank == 0 ? node_numbers.data() : nullptr), 1, MPI_INT,
                 &my_node_number, 1, MPI_INT,
                 0, MPI_COMM_WORLD);
     MPI_Scatter((rank == 0 ? node_local_ranks.data() : nullptr), 1, MPI_INT,
                 &my_node_local_rank, 1, MPI_INT,
                 0, MPI_COMM_WORLD);
-
-    // 結果をstderrに出力
-    // fprintf(stderr,
-    //         "Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
-    //         rank, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
-
-    return std::make_tuple(my_hostname, my_node_number, my_node_local_rank, node_count);
 
 }
