@@ -920,11 +920,6 @@ int main(int argc, char** argv) {
                     positive_control_qubit_num_list_kernel_arg[pcqi] = positive_control_qubit_num_physical_local_list[pcqi];
                 }
 
-                // auto negative_control_qubit_num_list_kernel_arg = qkiqn_get_negative_control_qubit_num_list(qcs_kernel_input_host);
-                // for (int ncqi = 0; ncqi < negative_control_qubit_num_physical_local_list.size(); ncqi++) {
-                //     negative_control_qubit_num_list_kernel_arg[ncqi] = negative_control_qubit_num_physical_local_list[ncqi];
-                // }
-
                 auto target_qubit_num_list_kernel_arg = qcs_kernel_input_host->get_target_qubit_num_list();
                 for (int tqi = 0; tqi < target_qubit_num_physical_list.size(); tqi++) {
                     target_qubit_num_list_kernel_arg[tqi] = target_qubit_num_physical_list[tqi];
@@ -949,17 +944,6 @@ int main(int argc, char** argv) {
                     qubit_num_list_sorted_kernel_arg[qni] = operand_qubit_num_list[qni];
                 }
 
-                // for (int proc_num_active = 0; proc_num_active < num_procs; proc_num_active++) {
-                //     if (proc_num_active==proc_num) {
-                //         for (int qni = 0; qni < operand_qubit_num_list.size(); qni++) {
-                //             fprintf(stderr, "debug: operand_qubit_num_list[%d]=%d\n", qni, operand_qubit_num_list[qni]);
-                //         }
-                //     }
-                //     if (proc_num_active != num_procs - 1) {
-                //         MPI_Barrier(MPI_COMM_WORLD);
-                //     }
-                // }
-
                 CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_input_constant_addr, qcs_kernel_input_host, qkiqn_size, cudaMemcpyHostToDevice, stream);
 
                 uint64_t const log_num_threads = num_qubits_local - num_operand_qubits;
@@ -976,33 +960,25 @@ int main(int argc, char** argv) {
 
                 uint64_t const block_size_gateop = 1ULL << log_block_size_gateop;
 
-                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size_max - num_operand_qubits));
-                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size_max - num_operand_qubits));
-
-                // fprintf(stderr, "debug: num_blocks_gateop=%llu\n", num_blocks_gateop);
-                // fprintf(stderr, "debug: block_size_gateop=%llu\n", block_size_gateop);
-
-                // printf("kernel: cuda_gate_cn_x\n");
                 // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
                 CHECK_CUDA(qcs::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
                 // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 
             } /* control_condition */
 
-            // } /* target_qubit_num_logical loop */
+        } /* target_qubit_num_logical loop */
 
-            CHECK_CUDA(cudaEventRecord, event_2, stream);
+        CHECK_CUDA(cudaEventRecord, event_2, stream);
 
-            CHECK_CUDA(cudaStreamSynchronize, stream);
+        CHECK_CUDA(cudaStreamSynchronize, stream);
 
-            CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-            MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-            elapsed_ms = elapsed_ms_2;
-            if (proc_num == 0) {
-                fprintf(stderr, "[info] elapsed_gpu=%f\n", elapsed_ms * 1e-3);
-                fprintf(stdout, "%lf\n", elapsed_ms * 1e-3);
-            }
+        CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
 
+        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+        elapsed_ms = elapsed_ms_2;
+        if (proc_num == 0) {
+            fprintf(stderr, "[info] elapsed_gpu=%f\n", elapsed_ms * 1e-3);
+            fprintf(stdout, "%lf\n", elapsed_ms * 1e-3);
         }
 
     }
