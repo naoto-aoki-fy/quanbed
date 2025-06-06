@@ -402,6 +402,120 @@ std::vector<int> target_qubit_num_logical_list;
 std::vector<int> positive_control_qubit_num_logical_list;
 std::vector<int> negative_control_qubit_num_logical_list;
 
+void ensure_local_qubits(
+    std::vector<int> const& target_qubit_num_logical_list,
+    std::vector<int> const& positive_control_qubit_num_logical_list,
+    std::vector<int> const& negative_control_qubit_num_logical_list
+) {
+    target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
+    for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
+        target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
+        // fprintf(stderr, "[debug] target_qubit_num_physical_list[tqni]=%d tqni=%d\n", target_qubit_num_physical_list[tqni], tqni);
+    }
+
+    swap_target_global_list.resize(0);
+    swap_target_local_list.resize(0);
+    for (int tqni = 0; tqni < target_qubit_num_physical_list.size(); tqni++) {
+        auto const tqn_i = target_qubit_num_physical_list[tqni];
+        if (tqn_i >= num_qubits_local) {
+            swap_target_global_list.push_back(tqn_i);
+            int const swap_target_local = num_qubits_local - swap_target_global_list.size();
+            swap_target_local_list.push_back(swap_target_local);
+            target_qubit_num_physical_list[tqni] = swap_target_local;
+            // fprintf(stderr, "[debug] target_qubit_num_physical=%d swap_target_local=%d\n", tqn_i, swap_target_local);
+        }
+    }
+    int const num_swap_qubits = swap_target_global_list.size();
+
+    /* target qubits is global */
+    if (swap_target_global_list.size() > 0) {
+
+        // b_min
+        int const swap_target_local_min = *std::min_element(swap_target_local_list.data(), swap_target_local_list.data() + num_swap_qubits);
+
+        uint64_t const local_buf_length = UINT64_C(1) << swap_target_local_min;
+        uint64_t swap_buffer_length = swap_buffer_total_length;
+        if (swap_buffer_length > local_buf_length) {
+            swap_buffer_length = local_buf_length;
+        }
+
+        // generate a mask for generating global_nonswap_self
+        uint64_t global_swap_self_mask = 0;
+        for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+            // a_delta = a – n_local
+            int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
+            global_swap_self_mask |= (UINT64_C(1) << swap_target_global_delta);
+        }
+
+        // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
+        uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
+
+        // 1<<(num_local_qubits - b_min) 
+        uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
+        for (uint64_t local_num_self = 0; local_num_self < num_local_areas; local_num_self++) {
+
+            // global_swap_peer = OR_i (local_num_selfのb_delta_i桁目)をa_delta_i桁目にする
+            uint64_t global_swap_peer = 0;
+            for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+                // a_delta_i
+                int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
+                // b_delta_i
+                int const swap_target_local_delta = swap_target_local_list[target_num] - swap_target_local_min;
+                global_swap_peer |=
+                    // local_num_selfのb_delta_i桁目
+                    ((local_num_self >> swap_target_local_delta) & 1)
+                    // をa_delta_i桁目にする
+                    << swap_target_global_delta;
+            }
+
+            uint64_t const proc_num_peer = global_swap_peer | global_nonswap_self;
+
+            // send & recv
+            if (proc_num_peer == proc_num) { continue; }
+
+            bool is_peer_greater = proc_num_peer > proc_num;
+            for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
+                CHECK_NCCL(ncclGroupStart);
+                for (int send_recv = 0; send_recv < 2; send_recv++) {
+                    if (send_recv ^ is_peer_greater) {
+                        CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                    } else {
+                        CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                    }
+                }
+                CHECK_NCCL(ncclGroupEnd);
+                CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(qcs::complex_t), cudaMemcpyDeviceToDevice, stream);
+            }
+
+        }
+
+        // swap_target_global_logical_list[:] = perm_p2l[swap_target_global_list[:]]
+        // swap_target_local_logical_list[:] = perm_p2l[swap_target_local_list[:]]
+        swap_target_local_logical_list.resize(num_swap_qubits);
+        swap_target_global_logical_list.resize(num_swap_qubits);
+        for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+            swap_target_local_logical_list[target_num] = perm_p2l[swap_target_local_list[target_num]];
+            swap_target_global_logical_list[target_num] = perm_p2l[swap_target_global_list[target_num]];
+        }
+
+        // update p2l & l2p
+        // perm_p2l[swap_target_global_list[:]] = swap_target_local_logical_list[:]
+        // perm_p2l[swap_target_local_list[:]] = swap_target_global_logical_list[:]
+        // perm_l2p[swap_target_global_logical_list[:]] = swap_target_local_list[:]
+        // perm_l2p[swap_target_local_logical_list[:]] = swap_target_global_list[:]
+
+        for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
+            perm_p2l[swap_target_global_list[target_num]] = swap_target_local_logical_list[target_num];
+            perm_p2l[swap_target_local_list[target_num]] = swap_target_global_logical_list[target_num];
+            perm_l2p[swap_target_global_logical_list[target_num]] = swap_target_local_list[target_num];
+            perm_l2p[swap_target_local_logical_list[target_num]] = swap_target_global_list[target_num];
+        }
+
+        // target_qubit_num_physical = swap_target_local;
+
+    }
+};
+
 int main(int argc, char** argv) {
 
     // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
@@ -415,7 +529,7 @@ int main(int argc, char** argv) {
     initstate_use_curand = false;
     initstate_use_data = false;
 
-    output_statevector = true;
+    output_statevector = false;
 
     if(initstate_use_curand+initstate_use_data+initstate_0+initstate_debug!=1) {
         throw std::runtime_error("specify only 1 item for initstate");
@@ -732,121 +846,7 @@ int main(int argc, char** argv) {
         for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
         {
 
-            target_qubit_num_logical_list = {target_qubit_num_logical};
-            positive_control_qubit_num_logical_list = {};
-            negative_control_qubit_num_logical_list = {};
-
-            // target_qubit_num_logical_list = {0};
-            // positive_control_qubit_num_logical_list = {1};
-            // negative_control_qubit_num_logical_list = {2};
-
-            target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
-            for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
-                target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
-                // fprintf(stderr, "[debug] target_qubit_num_physical_list[tqni]=%d tqni=%d\n", target_qubit_num_physical_list[tqni], tqni);
-            }
-
-            swap_target_global_list.resize(0);
-            swap_target_local_list.resize(0);
-            for (int tqni = 0; tqni < target_qubit_num_physical_list.size(); tqni++) {
-                auto const tqn_i = target_qubit_num_physical_list[tqni];
-                if (tqn_i >= num_qubits_local) {
-                    swap_target_global_list.push_back(tqn_i);
-                    int const swap_target_local = num_qubits_local - swap_target_global_list.size();
-                    swap_target_local_list.push_back(swap_target_local);
-                    target_qubit_num_physical_list[tqni] = swap_target_local;
-                    // fprintf(stderr, "[debug] target_qubit_num_physical=%d swap_target_local=%d\n", tqn_i, swap_target_local);
-                }
-            }
-            int const num_swap_qubits = swap_target_global_list.size();
-
-            /* target qubits is global */
-            if (swap_target_global_list.size() > 0) {
-
-                // b_min
-                int const swap_target_local_min = *std::min_element(swap_target_local_list.data(), swap_target_local_list.data() + num_swap_qubits);
-
-                uint64_t const local_buf_length = UINT64_C(1) << swap_target_local_min;
-                uint64_t swap_buffer_length = swap_buffer_total_length;
-                if (swap_buffer_length > local_buf_length) {
-                    swap_buffer_length = local_buf_length;
-                }
-
-                // generate a mask for generating global_nonswap_self
-                uint64_t global_swap_self_mask = 0;
-                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                    // a_delta = a – n_local
-                    int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
-                    global_swap_self_mask |= (UINT64_C(1) << swap_target_global_delta);
-                }
-
-                // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
-                uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
-
-                // 1<<(num_local_qubits - b_min) 
-                uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
-                for (uint64_t local_num_self = 0; local_num_self < num_local_areas; local_num_self++) {
-
-                    // global_swap_peer = OR_i (local_num_selfのb_delta_i桁目)をa_delta_i桁目にする
-                    uint64_t global_swap_peer = 0;
-                    for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                        // a_delta_i
-                        int const swap_target_global_delta = swap_target_global_list[target_num] - num_qubits_local;
-                        // b_delta_i
-                        int const swap_target_local_delta = swap_target_local_list[target_num] - swap_target_local_min;
-                        global_swap_peer |=
-                            // local_num_selfのb_delta_i桁目
-                            ((local_num_self >> swap_target_local_delta) & 1)
-                            // をa_delta_i桁目にする
-                            << swap_target_global_delta;
-                    }
-
-                    uint64_t const proc_num_peer = global_swap_peer | global_nonswap_self;
-
-                    // send & recv
-                    if (proc_num_peer == proc_num) { continue; }
-
-                    bool is_peer_greater = proc_num_peer > proc_num;
-                    for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
-                        CHECK_NCCL(ncclGroupStart);
-                        for (int send_recv = 0; send_recv < 2; send_recv++) {
-                            if (send_recv ^ is_peer_greater) {
-                                CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
-                            } else {
-                                CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
-                            }
-                        }
-                        CHECK_NCCL(ncclGroupEnd);
-                        CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(qcs::complex_t), cudaMemcpyDeviceToDevice, stream);
-                    }
-
-                }
-
-                // swap_target_global_logical_list[:] = perm_p2l[swap_target_global_list[:]]
-                // swap_target_local_logical_list[:] = perm_p2l[swap_target_local_list[:]]
-                swap_target_local_logical_list.resize(num_swap_qubits);
-                swap_target_global_logical_list.resize(num_swap_qubits);
-                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                    swap_target_local_logical_list[target_num] = perm_p2l[swap_target_local_list[target_num]];
-                    swap_target_global_logical_list[target_num] = perm_p2l[swap_target_global_list[target_num]];
-                }
-
-                // update p2l & l2p
-                // perm_p2l[swap_target_global_list[:]] = swap_target_local_logical_list[:]
-                // perm_p2l[swap_target_local_list[:]] = swap_target_global_logical_list[:]
-                // perm_l2p[swap_target_global_logical_list[:]] = swap_target_local_list[:]
-                // perm_l2p[swap_target_local_logical_list[:]] = swap_target_global_list[:]
-
-                for (int target_num = 0; target_num < num_swap_qubits; target_num++) {
-                    perm_p2l[swap_target_global_list[target_num]] = swap_target_local_logical_list[target_num];
-                    perm_p2l[swap_target_local_list[target_num]] = swap_target_global_logical_list[target_num];
-                    perm_l2p[swap_target_global_logical_list[target_num]] = swap_target_local_list[target_num];
-                    perm_l2p[swap_target_local_logical_list[target_num]] = swap_target_global_list[target_num];
-                }
-
-                // target_qubit_num_physical = swap_target_local;
-
-            }
+            ensure_local_qubits({target_qubit_num_logical}, {}, {});
 
             /* check whether proc_num is under control condition */
             bool control_condition = true;
