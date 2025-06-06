@@ -362,7 +362,7 @@ int num_samples;
 int rng_seed;
 
 int log_num_procs;
-int log_block_size;
+int log_block_size_max;
 int target_qubit_num_begin;
 int target_qubit_num_end;
 
@@ -373,7 +373,7 @@ cudaEvent_t event_2;
 uint64_t num_states;
 int num_qubits_local;
 uint64_t num_states_local;
-int block_size;
+int block_size_max;
 
 qcs::complex_t* state_data_device;
 qcs::kernel_common_struct* qcs_kernel_common_constant_addr;
@@ -582,12 +582,12 @@ int main(int argc, char** argv) {
 
     log_num_procs = log2_int(num_procs);
 
-    log_block_size = 9;
+    log_block_size_max = 9;
     target_qubit_num_begin = 0;
     target_qubit_num_end = num_qubits;
     // target_qubit_num_end = 2;
 
-    if (proc_num == 0) { fprintf(stderr, "[info] log_block_size=%d\n", log_block_size); }
+    if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
 
     CHECK_CUDA(cudaStreamCreate, &stream);
     DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
@@ -603,8 +603,8 @@ int main(int argc, char** argv) {
     num_qubits_local = num_qubits - log_num_procs;
     
     num_states_local = 1ULL << num_qubits_local;
-    block_size = 1 << log_block_size;
-    // num_blocks = 1ULL << (num_qubits_local - 1 - log_block_size);
+    block_size_max = 1 << log_block_size_max;
+    // num_blocks = 1ULL << (num_qubits_local - 1 - log_block_size_max);
 
     if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
@@ -634,7 +634,7 @@ int main(int argc, char** argv) {
     // CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
     DEFER_CHECK_CUDA(cudaFree, swap_buffer);
 
-    CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size) * sizeof(qcs::float_t));
+    CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t));
     // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
 
     if (initstate_debug) {
@@ -645,9 +645,9 @@ int main(int argc, char** argv) {
         // CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(qcs::complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
         uint64_t num_blocks_init;
         uint64_t block_size_init;
-        if (num_qubits_local >= log_block_size) {
-            num_blocks_init = num_states_local >> log_block_size;
-            block_size_init = block_size;
+        if (num_qubits_local >= log_block_size_max) {
+            num_blocks_init = num_states_local >> log_block_size_max;
+            block_size_init = block_size_max;
         } else {
             num_blocks_init = 1;
             block_size_init = num_states_local;
@@ -751,9 +751,9 @@ int main(int argc, char** argv) {
             uint64_t num_blocks_reduce;
             int block_size_reduce;
 
-            if (data_length > block_size) {
-                block_size_reduce = block_size;
-                num_blocks_reduce = data_length >> log_block_size;
+            if (data_length > block_size_max) {
+                block_size_reduce = block_size_max;
+                num_blocks_reduce = data_length >> log_block_size_max;
             } else {
                 block_size_reduce = data_length;
                 num_blocks_reduce = 1;
@@ -764,9 +764,9 @@ int main(int argc, char** argv) {
             data_length = num_blocks_reduce;
 
             while (data_length > 1) {
-                if (data_length > block_size) {
-                    block_size_reduce = block_size;
-                    num_blocks_reduce = data_length >> log_block_size;
+                if (data_length > block_size_max) {
+                    block_size_reduce = block_size_max;
+                    num_blocks_reduce = data_length >> log_block_size_max;
                 } else {
                     block_size_reduce = data_length;
                     num_blocks_reduce = 1;
@@ -804,7 +804,7 @@ int main(int argc, char** argv) {
 
         // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-        CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size), block_size, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
+        CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
         
 
         // fprintf(stderr, "[debug] line=%d\n", __LINE__);
@@ -960,18 +960,18 @@ int main(int argc, char** argv) {
                 uint64_t log_block_size_gateop;
                 uint64_t num_blocks_gateop;
 
-                if (log_block_size > log_num_threads) {
+                if (log_block_size_max > log_num_threads) {
                     log_block_size_gateop = log_num_threads;
                     num_blocks_gateop = 1;
                 } else {
-                    log_block_size_gateop = log_block_size;
-                    num_blocks_gateop = ((uint64_t)1) << (log_num_threads - log_block_size);
+                    log_block_size_gateop = log_block_size_max;
+                    num_blocks_gateop = ((uint64_t)1) << (log_num_threads - log_block_size_max);
                 }
 
                 uint64_t const block_size_gateop = 1ULL << log_block_size_gateop;
 
-                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size - num_operand_qubits));
-                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size - num_operand_qubits));
+                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size_max - num_operand_qubits));
+                // uint64_t const num_blocks_gateop = ((uint64_t)1) << ((int64_t)(num_qubits_local - log_block_size_max - num_operand_qubits));
 
                 // fprintf(stderr, "debug: num_blocks_gateop=%llu\n", num_blocks_gateop);
                 // fprintf(stderr, "debug: block_size_gateop=%llu\n", block_size_gateop);
