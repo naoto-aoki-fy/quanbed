@@ -67,19 +67,15 @@ struct myncclCommStruct {
 static myncclCommStruct myncclCommStructPrivate;
 
 static cudaError_t myncclCudaMalloc(void **devPtr, size_t size) {
-    // fprintf(stderr, "debug: myncclCudaMalloc\n");
     cudaError_t const ret = myncclCommStructPrivate.origCudaMalloc(devPtr, size);
     myncclCommStructPrivate.pointer_list.push_back((uint64_t)*devPtr);
-    // fprintf(stderr, "debug: myncclCudaMalloc ptr=%p\n", *devPtr);
     return ret;
 }
 
 static cudaError_t myncclCudaSetDevice(int device) {
-    // fprintf(stderr, "debug: myncclCudaMalloc\n");
     cudaError_t const ret = myncclCommStructPrivate.origCudaSetDevice(0);
-    // myncclCommStructPrivate.pointer_list.push_back((uint64_t)*devPtr);
-    // fprintf(stderr, "debug: myncclCudaMalloc ptr=%p\n", *devPtr);
     return ret;
+
 }
 
 static inline uint64_t myncclSizeofNcclDataType(int datatype) {

@@ -408,18 +408,29 @@ __global__ void cuda_gate() {
 }
 
 namespace qcs {
+
+enum class initstate_enum {
+    sequential,
+    zero,
+    use_curand,
+    laod_statevector,
+};
+
 struct simulator {
 
-bool do_normalization;
-bool calc_checksum;
+int argc;
+char** argv;
+
+int num_qubits;
+
+// **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
+bool flag_normalize;
+bool flag_calculate_checksum;
 bool use_unified_memory;
 
-bool initstate_debug;
-bool initstate_0;
-bool initstate_use_curand;
-bool initstate_use_data;
+initstate_enum initstate_choice;
 
-bool output_statevector;
+bool flag_save_statevector;
 
 float elapsed_ms, elapsed_ms_2;
 
@@ -486,6 +497,309 @@ std::vector<int> positive_control_qubit_num_logical_list;
 std::vector<int> negative_control_qubit_num_logical_list;
 
 bool control_condition;
+
+simulator(int argc, char** argv) {
+    this->argc = argc;
+    this->argv = argv;
+}
+
+void setup(int num_rand_areas_times_num_procs) {
+
+    MPI_Init(&argc, &argv);
+
+    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+    MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
+
+    if (proc_num==0) {
+        fprintf(stderr, "[info] num_procs=%d\n", num_procs);
+    }
+
+    num_rand_areas = num_rand_areas_times_num_procs / num_procs;
+
+    group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
+    fprintf(stderr,
+            "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
+            proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
+
+    // gpu_id = proc_num;
+    gpu_id = my_node_local_rank;
+    // gpu_id = 0;
+    CHECK_CUDA(cudaSetDevice, gpu_id);
+
+    if (proc_num == 0) {
+        CHECK_NCCL(ncclGetUniqueId, &nccl_id);
+    }
+
+    MPI_Bcast(&nccl_id, sizeof(nccl_id), MPI_BYTE, 0, MPI_COMM_WORLD);
+    nccl_rank = proc_num;
+    CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
+
+    num_qubits = 14;
+    if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
+
+    perm_p2l.resize(num_qubits);
+    perm_l2p.resize(num_qubits);
+
+    for(int qubit_num=0; qubit_num<num_qubits; qubit_num++) {
+        perm_p2l[qubit_num] = qubit_num;
+        perm_l2p[qubit_num] = qubit_num;
+    }
+
+    // num_samples = 64;
+    num_samples = 1;
+    rng_seed = 12345;
+
+    log_num_procs = log2_int(num_procs);
+
+    log_block_size_max = 9;
+    target_qubit_num_begin = 0;
+    target_qubit_num_end = num_qubits;
+    // target_qubit_num_end = 2;
+
+    if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
+
+    CHECK_CUDA(cudaStreamCreate, &stream);
+    // DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
+
+    CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
+    // DEFER_CHECK_CUDA(cudaEventDestroy, event_1);
+
+    CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
+    // DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
+
+    num_states = 1ULL << num_qubits;
+
+    num_qubits_local = num_qubits - log_num_procs;
+
+    num_states_local = 1ULL << num_qubits_local;
+    block_size_max = 1 << log_block_size_max;
+    // num_blocks = 1ULL << (num_qubits_local - 1 - log_block_size_max);
+
+    if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
+
+    if (use_unified_memory) {
+        CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
+        CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
+    } else {
+        CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
+    }
+    // DEFER_CHECK_CUDA(cudaFree, state_data_device);
+
+    CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
+
+    qcs_kernel_common_host.num_qubits = num_qubits;
+    qcs_kernel_common_host.state_data_device = state_data_device;
+    CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
+
+    CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
+
+    // qcs::kernel_input_qnlist_struct* qcs_kernel_input_host = (qcs::kernel_input_qnlist_struct*)malloc(QCS_KERNEL_INPUT_SIZE);
+    // DEFER_FUNC(free, qcs_kernel_input_host);
+
+    log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
+    // log_swap_buffer_total_length = num_qubits_local;
+    swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
+    CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
+    // CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
+    // DEFER_CHECK_CUDA(cudaFree, swap_buffer);
+
+    CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t));
+    // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
+}
+
+void initialize_sequential() {
+    // std::vector<qcs::complex_t> state_data_host(num_states_local);
+    // for (uint64_t state_num_local = 0; state_num_local < num_states_local; state_num_local++) {
+    //     state_data_host[state_num_local] = state_num_local + proc_num * num_states_local;
+    // }
+    // CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(qcs::complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
+    uint64_t num_blocks_init;
+    uint64_t block_size_init;
+    if (num_qubits_local >= log_block_size_max) {
+        num_blocks_init = num_states_local >> log_block_size_max;
+        block_size_init = block_size_max;
+    } else {
+        num_blocks_init = 1;
+        block_size_init = num_states_local;
+    }
+    // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
+    // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
+
+    CHECK_CUDA(qcs::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
+
+}
+
+void initialize_zero() {
+    if (proc_num == 0) {
+        qcs::complex_t const one = 1;
+        CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::float_t), cudaMemcpyHostToDevice, stream);
+    }
+}
+
+void initialize_use_curand() {
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    if (proc_num == 0) { fprintf(stderr, "[info] generating random state\n"); }
+    curandGenerator_t rng_device;
+
+    // CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+    // CHECK_CURAND(curandSetStream, rng_device, stream);
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
+
+    CHECK_CUDA(cudaEventRecord, event_1, stream);
+
+    // if (false) {
+    //     CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+    //     CHECK_CURAND(curandSetStream, rng_device, stream);
+    //     CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
+    //     CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local * 2 /* complex */, 0.0, 1.0);
+    //     CHECK_CURAND(curandDestroyGenerator, rng_device);
+    // } else
+    {
+        // int const num_rand_areas = 4;
+        int const log_num_rand_areas = log2_int(num_rand_areas);
+        // if (log_num_rand_areas!=1) { throw; }
+        uint64_t const num_states_rand_area = num_states_local >> log_num_rand_areas;
+        for (int rand_area_num = 0; rand_area_num < num_rand_areas; rand_area_num++) {
+            CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+            CHECK_CURAND(curandSetStream, rng_device, stream);
+            CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * num_rand_areas + rand_area_num);
+            CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)(state_data_device + num_states_rand_area * ((uint64_t)rand_area_num)), num_states_rand_area * 2 /* complex */, 0.0, 1.0);
+            CHECK_CURAND(curandDestroyGenerator, rng_device);
+        }
+    }
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
+    // CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
+
+    // curandGenerator_t rng_device_2;
+
+    // CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
+    // CHECK_CURAND(curandSetStream, rng_device_2, stream);
+    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + proc_num * 2 + 1);
+
+    // CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((qcs::float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
+}
+
+void initialize_laod_statevector() {
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if (proc_num == 0) { fprintf(stderr, "[info] load statevector\n"); }
+
+    qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
+    DEFER_FUNC(free, state_data_host);
+
+    for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
+        if (proc_num_active == proc_num) {
+            FILE* const fp = fopen("statevector_input.bin", "rb");
+            if (fp == NULL) {
+                throw std::runtime_error("open failed");
+            }
+            fseek(fp, proc_num * num_states_local * sizeof(qcs::complex_t), SEEK_SET);
+            size_t const ret = fread(state_data_host, sizeof(qcs::complex_t), num_states_local, fp);
+            if (ret != num_states_local) {
+                throw std::runtime_error("fread failed");
+            }
+            fclose(fp);
+
+            CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host, num_states_local * sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    CHECK_CUDA(cudaStreamSynchronize, stream);
+}
+
+void normalize_statevector() {
+
+    if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); }
+
+    {
+        uint64_t data_length = num_states_local;
+        uint64_t num_blocks_reduce;
+        int block_size_reduce;
+
+        if (data_length > block_size_max) {
+            block_size_reduce = block_size_max;
+            num_blocks_reduce = data_length >> log_block_size_max;
+        } else {
+            block_size_reduce = data_length;
+            num_blocks_reduce = 1;
+        }
+
+        CHECK_CUDA(qcs::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
+
+        data_length = num_blocks_reduce;
+
+        while (data_length > 1) {
+            if (data_length > block_size_max) {
+                block_size_reduce = block_size_max;
+                num_blocks_reduce = data_length >> log_block_size_max;
+            } else {
+                block_size_reduce = data_length;
+                num_blocks_reduce = 1;
+            }
+
+            CHECK_CUDA(qcs::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
+
+            data_length = num_blocks_reduce;
+        }
+    }
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    qcs::float_t norm_sum_local;
+    CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(qcs::float_t), cudaMemcpyDeviceToHost, stream);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    CHECK_CUDA(cudaFree, (void*)norm_sum_device);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    CHECK_CUDA(cudaStreamSynchronize, stream);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    qcs::float_t norm_sum_global;
+    MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
+
+    if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
+
+    qcs::float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
+    fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    CHECK_CUDA(cudaEventRecord, event_2, stream);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    CHECK_CUDA(cudaStreamSynchronize, stream);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+    elapsed_ms = elapsed_ms_2;
+
+    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
+
+    if(proc_num==0) {
+        fprintf(stderr, "[info] rng elapsed=%lf\n", elapsed_ms * 1e-3);
+        fprintf(stderr, "[info] normalize done\n");
+    }
+}
+
 
 void ensure_local_qubits() {
     target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
@@ -714,325 +1028,146 @@ void operate_gate() {
     // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
     CHECK_CUDA(qcs::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
     // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
+}
+
+void save_statevector() {
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    if (proc_num == 0) { fprintf(stderr, "[info] dump statevector\n"); }
+
+    qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
+    DEFER_FUNC(free, state_data_host);
+
+    CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+
+    for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
+        if (proc_num_active == proc_num) {
+            FILE* const fp = fopen("statevector_output.bin", (proc_num==0)? "wb": "rb+");
+            if (fp == NULL) {
+                throw std::runtime_error("open failed");
+            }
+
+            for (uint64_t state_num_physical_local = 0; state_num_physical_local < num_states_local; state_num_physical_local++) {
+                uint64_t const state_num_physical = state_num_physical_local | (((uint64_t)proc_num) << num_qubits_local);
+                uint64_t state_num_logical = 0;
+                for(int qubit_num_physical = 0; qubit_num_physical < num_qubits; qubit_num_physical++) {
+                    int qubit_num_logical = perm_p2l[qubit_num_physical];
+                    state_num_logical = state_num_logical | (((state_num_physical >> qubit_num_physical) & 1) << qubit_num_logical);
+                }
+                int const ret_fseek = fseek(fp, state_num_logical * sizeof(qcs::complex_t), SEEK_SET);
+                if (ret_fseek!=0) {
+                    fprintf(stderr, "errno=%d\n", errno);
+                    std::vector<char> error_buf(128);
+                    sprintf(error_buf.data(), "ret_fseek=%d", ret_fseek);
+                    throw std::runtime_error(error_buf.data());
+                }
+                size_t const ret = fwrite(&state_data_host[state_num_physical_local], sizeof(qcs::complex_t), 1, fp);
+                if (ret != 1) {
+                    fprintf(stderr, "errno=%d\n", errno);
+                    std::vector<char> error_buf(128);
+                    sprintf(error_buf.data(), "fwrite failed ret=%d", ret);
+                    throw std::runtime_error(error_buf.data());
+                }
+            }
+            fflush(fp);
+            fclose(fp);
+            fsync(fileno(fp));
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+}
+
+void calculate_checksum() {
+
+    if (proc_num==0) {
+        fprintf(stderr, "[info] gathering state data\n");
+
+        EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+        if (!mdctx) {
+            perror("EVP_MD_CTX_new failed");
+            exit(1);
+        }
+
+        if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
+            perror("EVP_DigestInit_ex failed");
+            EVP_MD_CTX_free(mdctx);
+            exit(1);
+        }
+
+        qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states * sizeof(qcs::complex_t));
+        DEFER_FUNC(free, state_data_host);
+
+        CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+        for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
+            MPI_Status mpi_status;
+            MPI_Recv(&state_data_host[peer_proc_num * num_states_local], num_states_local * 2, MPI_DOUBLE, peer_proc_num, 0, MPI_COMM_WORLD, &mpi_status);
+        }
+        CHECK_CUDA(cudaStreamSynchronize, stream);
+
+        for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
+            int64_t state_num_physical = 0;
+            for(int qubit_num_logical = 0; qubit_num_logical < num_qubits; qubit_num_logical++) {
+                int qubit_num_physical = perm_l2p[qubit_num_logical];
+                state_num_physical = state_num_physical | (((state_num_logical >> qubit_num_logical) & 1) << qubit_num_physical);
+            }
+
+            if (EVP_DigestUpdate(mdctx, &state_data_host[state_num_physical], sizeof(qcs::complex_t)) != 1) {
+                perror("EVP_DigestUpdate failed");
+                EVP_MD_CTX_free(mdctx);
+                exit(1);
+            }
+        }
+
+        std::vector<unsigned char> evp_hash(EVP_MAX_MD_SIZE); // [EVP_MAX_MD_SIZE];
+        unsigned int evp_hash_len;
+        if (EVP_DigestFinal_ex(mdctx, evp_hash.data(), &evp_hash_len) != 1) {
+            perror("EVP_DigestFinal_ex failed");
+            EVP_MD_CTX_free(mdctx);
+            exit(1);
+        }
+
+        fprintf(stderr, "[info] checksum: ");
+        for (unsigned int i = 0; i < evp_hash_len; i++) {
+            fprintf(stderr, "%02x", evp_hash[i]);
+        }
+        fprintf(stderr, "\n");
+
+        EVP_MD_CTX_free(mdctx);
+    } else {
+        MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+    }
 
 }
 
 int main(int argc, char** argv) {
 
-    // **注意**: normalize_factorが並列方法によって若干計算結果に違いがあるので、ノーマライズしてしまうと、チェックサムが一致しなくなる
-    // **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
-    do_normalization = false;
-    calc_checksum = true;
+    flag_normalize = false;
+    flag_calculate_checksum = true;
     use_unified_memory = false;
+    initstate_choice = initstate_enum::sequential;
+    flag_save_statevector = false;
 
-    initstate_debug = true;
-    initstate_0 = false;
-    initstate_use_curand = false;
-    initstate_use_data = false;
+    setup(8 /* num_rand_areas_times_num_procs */);
+    DEFER_FUNC(dispose);
 
-    output_statevector = false;
-
-    if(initstate_use_curand+initstate_use_data+initstate_0+initstate_debug!=1) {
-        throw std::runtime_error("specify only 1 item for initstate");
+    switch (initstate_choice) {
+        case initstate_enum::sequential:
+            initialize_sequential();
+            break;
+        case initstate_enum::zero:
+            initialize_zero();
+            break;
+        case initstate_enum::use_curand:
+            initialize_use_curand();
+            break;
+        case initstate_enum::laod_statevector:
+            initialize_laod_statevector();
+            break;
+        default:
+            throw initstate_choice;
     }
 
-    MPI_Init(&argc, &argv);
-
-    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
-    MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
-
-    if (proc_num==0) {
-        fprintf(stderr, "[info] num_procs=%d\n", num_procs);
-    }
-
-    num_rand_areas = 8 / num_procs;
-    // num_rand_areas = 1;
-
-    group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
-    fprintf(stderr,
-            "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
-            proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
-
-    // gpu_id = proc_num;
-    // gpu_id = my_node_local_rank;
-    gpu_id = 0;
-    CHECK_CUDA(cudaSetDevice, gpu_id);
-
-    if (proc_num == 0) {
-        CHECK_NCCL(ncclGetUniqueId, &nccl_id);
-    }
-
-    MPI_Bcast(&nccl_id, sizeof(nccl_id), MPI_BYTE, 0, MPI_COMM_WORLD);
-    nccl_rank = proc_num;
-    CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
-
-    int const num_qubits = 14;
-    if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
-
-    perm_p2l.resize(num_qubits);
-    perm_l2p.resize(num_qubits);
-
-    for(int qubit_num=0; qubit_num<num_qubits; qubit_num++) {
-        perm_p2l[qubit_num] = qubit_num;
-        perm_l2p[qubit_num] = qubit_num;
-    }
-
-    // num_samples = 64;
-    num_samples = 1;
-    rng_seed = 12345;
-
-    log_num_procs = log2_int(num_procs);
-
-    log_block_size_max = 9;
-    target_qubit_num_begin = 0;
-    target_qubit_num_end = num_qubits;
-    // target_qubit_num_end = 2;
-
-    if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
-
-    CHECK_CUDA(cudaStreamCreate, &stream);
-    DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
-
-    CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
-    DEFER_CHECK_CUDA(cudaEventDestroy, event_1);
-
-    CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
-    DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
-
-    num_states = 1ULL << num_qubits;
-
-    num_qubits_local = num_qubits - log_num_procs;
-    
-    num_states_local = 1ULL << num_qubits_local;
-    block_size_max = 1 << log_block_size_max;
-    // num_blocks = 1ULL << (num_qubits_local - 1 - log_block_size_max);
-
-    if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
-
-    if (use_unified_memory) {
-        CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
-        CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
-    } else {
-        CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
-    }
-    DEFER_CHECK_CUDA(cudaFree, state_data_device);
-
-    CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
-
-    qcs_kernel_common_host.num_qubits = num_qubits;
-    qcs_kernel_common_host.state_data_device = state_data_device;
-    CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
-
-    CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
-
-    // qcs::kernel_input_qnlist_struct* qcs_kernel_input_host = (qcs::kernel_input_qnlist_struct*)malloc(QCS_KERNEL_INPUT_SIZE);
-    // DEFER_FUNC(free, qcs_kernel_input_host);
-
-    log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
-    // log_swap_buffer_total_length = num_qubits_local;
-    swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
-    CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
-    // CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
-    DEFER_CHECK_CUDA(cudaFree, swap_buffer);
-
-    CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t));
-    // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
-
-    if (initstate_debug) {
-        // std::vector<qcs::complex_t> state_data_host(num_states_local);
-        // for (uint64_t state_num_local = 0; state_num_local < num_states_local; state_num_local++) {
-        //     state_data_host[state_num_local] = state_num_local + proc_num * num_states_local;
-        // }
-        // CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(qcs::complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
-        uint64_t num_blocks_init;
-        uint64_t block_size_init;
-        if (num_qubits_local >= log_block_size_max) {
-            num_blocks_init = num_states_local >> log_block_size_max;
-            block_size_init = block_size_max;
-        } else {
-            num_blocks_init = 1;
-            block_size_init = num_states_local;
-        }
-        // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
-        // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
-        CHECK_CUDA(qcs::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
-
-    }
-
-    if (initstate_0) {
-        if (proc_num == 0) {
-            qcs::complex_t const one = 1;
-            CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::float_t), cudaMemcpyHostToDevice, stream);
-        }
-    }
-
-    if (initstate_use_curand) {
-
-        MPI_Barrier(MPI_COMM_WORLD);
-        if (proc_num == 0) { fprintf(stderr, "[info] generating random state\n"); }
-        curandGenerator_t rng_device;
-
-        // CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-        // CHECK_CURAND(curandSetStream, rng_device, stream);
-        // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
-
-        CHECK_CUDA(cudaEventRecord, event_1, stream);
-
-        // if (false) {
-        //     CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-        //     CHECK_CURAND(curandSetStream, rng_device, stream);
-        //     CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
-        //     CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local * 2 /* complex */, 0.0, 1.0);
-        //     CHECK_CURAND(curandDestroyGenerator, rng_device);
-        // } else
-        {
-            // int const num_rand_areas = 4;
-            int const log_num_rand_areas = log2_int(num_rand_areas);
-            // if (log_num_rand_areas!=1) { throw; }
-            uint64_t const num_states_rand_area = num_states_local >> log_num_rand_areas;
-            for (int rand_area_num = 0; rand_area_num < num_rand_areas; rand_area_num++) {
-                CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-                CHECK_CURAND(curandSetStream, rng_device, stream);
-                CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * num_rand_areas + rand_area_num);
-                CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)(state_data_device + num_states_rand_area * ((uint64_t)rand_area_num)), num_states_rand_area * 2 /* complex */, 0.0, 1.0);
-                CHECK_CURAND(curandDestroyGenerator, rng_device);
-            }
-        }
-        // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
-        // CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
-
-        // curandGenerator_t rng_device_2;
-
-        // CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
-        // CHECK_CURAND(curandSetStream, rng_device_2, stream);
-        // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + proc_num * 2 + 1);
-
-        // CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((qcs::float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
-
-    } /* initstate_use_curand */
-
-    if (initstate_use_data) {
-
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        if (proc_num == 0) { fprintf(stderr, "[info] load statevector\n"); }
-
-        qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
-        DEFER_FUNC(free, state_data_host);
-
-        for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
-            if (proc_num_active == proc_num) {
-                FILE* const fp = fopen("statevector_input.bin", "rb");
-                if (fp == NULL) {
-                    throw std::runtime_error("open failed");
-                }
-                fseek(fp, proc_num * num_states_local * sizeof(qcs::complex_t), SEEK_SET);
-                size_t const ret = fread(state_data_host, sizeof(qcs::complex_t), num_states_local, fp);
-                if (ret != num_states_local) {
-                    throw std::runtime_error("fread failed");
-                }
-                fclose(fp);
-
-                CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host, num_states_local * sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
-
-            }
-            MPI_Barrier(MPI_COMM_WORLD);
-        }
-
-        CHECK_CUDA(cudaStreamSynchronize, stream);
-
-    } /* init_state_use_data */
-
-    if (do_normalization) {
-
-        if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); } 
-
-        {
-            uint64_t data_length = num_states_local;
-            uint64_t num_blocks_reduce;
-            int block_size_reduce;
-
-            if (data_length > block_size_max) {
-                block_size_reduce = block_size_max;
-                num_blocks_reduce = data_length >> log_block_size_max;
-            } else {
-                block_size_reduce = data_length;
-                num_blocks_reduce = 1;
-            }
-
-            CHECK_CUDA(qcs::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
-
-            data_length = num_blocks_reduce;
-
-            while (data_length > 1) {
-                if (data_length > block_size_max) {
-                    block_size_reduce = block_size_max;
-                    num_blocks_reduce = data_length >> log_block_size_max;
-                } else {
-                    block_size_reduce = data_length;
-                    num_blocks_reduce = 1;
-                }
-
-                CHECK_CUDA(qcs::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
-
-                data_length = num_blocks_reduce;
-            }
-        }
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        qcs::float_t norm_sum_local;
-        CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(qcs::float_t), cudaMemcpyDeviceToHost, stream);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        CHECK_CUDA(cudaFree, (void*)norm_sum_device);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        CHECK_CUDA(cudaStreamSynchronize, stream);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        qcs::float_t norm_sum_global;
-        MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
-
-        if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
-
-        qcs::float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
-        fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
-        
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        CHECK_CUDA(cudaEventRecord, event_2, stream);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        CHECK_CUDA(cudaStreamSynchronize, stream);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-        elapsed_ms = elapsed_ms_2;
-
-        // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-        if(proc_num==0) {
-            fprintf(stderr, "[info] rng elapsed=%lf\n", elapsed_ms * 1e-3);
-            fprintf(stderr, "[info] normalize done\n");
-        }
-
-    }
+    if (flag_normalize) { normalize_statevector(); }
 
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu_hadamard\n");
@@ -1051,9 +1186,7 @@ int main(int argc, char** argv) {
             negative_control_qubit_num_logical_list = {};
 
             ensure_local_qubits();
-
             check_control_qubit_num_physical();
-
             operate_gate();
 
         } /* target_qubit_num_logical loop */
@@ -1073,138 +1206,29 @@ int main(int argc, char** argv) {
 
     }
 
-    if (output_statevector) {
-
-        MPI_Barrier(MPI_COMM_WORLD);
-        if (proc_num == 0) { fprintf(stderr, "[info] dump statevector\n"); }
-
-        qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
-        DEFER_FUNC(free, state_data_host);
-
-        CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
-
-        // if (0 == proc_num) {
-        //     FILE* const fp = fopen("statevector_output.bin", "wb");
-        //     ftruncate(fileno(fp), num_states * sizeof(qcs::complex_t));
-        // }
-        // MPI_Barrier(MPI_COMM_WORLD);
-
-        for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
-            if (proc_num_active == proc_num) {
-                FILE* const fp = fopen("statevector_output.bin", (proc_num==0)? "wb": "rb+");
-                if (fp == NULL) {
-                    throw std::runtime_error("open failed");
-                }
-
-                for (uint64_t state_num_physical_local = 0; state_num_physical_local < num_states_local; state_num_physical_local++) {
-                    uint64_t const state_num_physical = state_num_physical_local | (((uint64_t)proc_num) << num_qubits_local);
-                    uint64_t state_num_logical = 0;
-                    for(int qubit_num_physical = 0; qubit_num_physical < num_qubits; qubit_num_physical++) {
-                        int qubit_num_logical = perm_p2l[qubit_num_physical];
-                        state_num_logical = state_num_logical | (((state_num_physical >> qubit_num_physical) & 1) << qubit_num_logical);
-                    }
-                    int const ret_fseek = fseek(fp, state_num_logical * sizeof(qcs::complex_t), SEEK_SET);
-                    if (ret_fseek!=0) {
-                        fprintf(stderr, "errno=%d\n", errno);
-                        std::vector<char> error_buf(128);
-                        sprintf(error_buf.data(), "ret_fseek=%d", ret_fseek);
-                        throw std::runtime_error(error_buf.data());
-                    }
-                    size_t const ret = fwrite(&state_data_host[state_num_physical_local], sizeof(qcs::complex_t), 1, fp);
-                    if (ret != 1) {
-                        fprintf(stderr, "errno=%d\n", errno);
-                        std::vector<char> error_buf(128);
-                        sprintf(error_buf.data(), "fwrite failed ret=%d", ret);
-                        throw std::runtime_error(error_buf.data());
-                    }
-                }
-                fflush(fp);
-                fclose(fp);
-                fsync(fileno(fp));
-            }
-            MPI_Barrier(MPI_COMM_WORLD);
-        }
-
-    }
-
-
-    if (calc_checksum) {
-        if (proc_num==0) {
-            fprintf(stderr, "[info] gathering state data\n");
-
-            EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-            if (!mdctx) {
-                perror("EVP_MD_CTX_new failed");
-                exit(1);
-            }
-
-            if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
-                perror("EVP_DigestInit_ex failed");
-                EVP_MD_CTX_free(mdctx);
-                exit(1);
-            }
-
-            qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states * sizeof(qcs::complex_t));
-            DEFER_FUNC(free, state_data_host);
-
-            CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
-            for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
-                MPI_Status mpi_status;
-                MPI_Recv(&state_data_host[peer_proc_num * num_states_local], num_states_local * 2, MPI_DOUBLE, peer_proc_num, 0, MPI_COMM_WORLD, &mpi_status);
-            }
-            CHECK_CUDA(cudaStreamSynchronize, stream);
-
-            for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
-                int64_t state_num_physical = 0;
-                for(int qubit_num_logical = 0; qubit_num_logical < num_qubits; qubit_num_logical++) {
-                    int qubit_num_physical = perm_l2p[qubit_num_logical];
-                    state_num_physical = state_num_physical | (((state_num_logical >> qubit_num_logical) & 1) << qubit_num_physical);
-                }
-                // float int_values[2];
-                // int_values[0] = floor(10000000*state_data_host[state_num_physical].real());
-                // int_values[1] = floor(10000000*state_data_host[state_num_physical].imag());
-                // int_values[0] = state_data_host[state_num_physical].real();
-                // int_values[1] = state_data_host[state_num_physical].imag();
-                // &state_data_host[state_num_physical]
-                // sizeof(qcs::complex_t)
-                if (EVP_DigestUpdate(mdctx, &state_data_host[state_num_physical], sizeof(qcs::complex_t)) != 1) {
-                    perror("EVP_DigestUpdate failed");
-                    EVP_MD_CTX_free(mdctx);
-                    exit(1);
-                }
-            }
-
-            std::vector<unsigned char> evp_hash(EVP_MAX_MD_SIZE); // [EVP_MAX_MD_SIZE];
-            unsigned int evp_hash_len;
-            if (EVP_DigestFinal_ex(mdctx, evp_hash.data(), &evp_hash_len) != 1) {
-                perror("EVP_DigestFinal_ex failed");
-                EVP_MD_CTX_free(mdctx);
-                exit(1);
-            }
-
-            fprintf(stderr, "[info] checksum: ");
-            for (unsigned int i = 0; i < evp_hash_len; i++) {
-                fprintf(stderr, "%02x", evp_hash[i]);
-            }
-            fprintf(stderr, "\n");
-
-            EVP_MD_CTX_free(mdctx);
-        } else {
-            MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-        }
-    }
+    if (flag_save_statevector) { save_statevector(); }
+    if (flag_calculate_checksum) { calculate_checksum(); }
 
     MPI_Finalize();
 
     return 0;
 
 };
+
+void dispose() {
+    CHECK_CUDA(cudaStreamDestroy, stream);
+    CHECK_CUDA(cudaEventDestroy, event_1);
+    CHECK_CUDA(cudaEventDestroy, event_2);
+    CHECK_CUDA(cudaFree, state_data_device);
+    CHECK_CUDA(cudaFree, swap_buffer);
+};
+
 };
 }
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
     myncclPatch();
-    qcs::simulator simulator;
+    qcs::simulator simulator(argc, argv);
     return simulator.main(argc, argv);
 }
