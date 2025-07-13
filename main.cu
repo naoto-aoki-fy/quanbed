@@ -44,7 +44,10 @@ namespace qcs {
     template<typename KernelType, typename... Args>
     cudaError_t cudaLaunchKernel(KernelType func, dim3 gridDim, dim3 blockDim, size_t sharedMem, cudaStream_t stream, Args... args) {
         void* ptrs[] = {(void*)&args...};
-        return ::cudaLaunchKernel((void const*)func, gridDim, blockDim, ptrs, sharedMem, stream);
+        if (false) {
+            func(args...);
+        }
+        return ::cudaLaunchKernel((void*)func, gridDim, blockDim, ptrs, sharedMem, stream);
     }
 }
 
@@ -799,7 +802,6 @@ void normalize_statevector() {
         fprintf(stderr, "[info] normalize done\n");
     }
 }
-
 
 void ensure_local_qubits() {
     target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
