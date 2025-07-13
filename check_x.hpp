@@ -1,35 +1,45 @@
 #pragma once
 
 #include <cstdio>
-
 #include <stdexcept>
-#include <string_view>
 #include <vector>
+#include <utility>
 
-constexpr const char* get_filename(const char* filename_abs) {
-    size_t const pos = std::string_view(filename_abs).rfind("/");
-    return (pos != std::string_view::npos) ? &filename_abs[pos+1] : filename_abs;
+constexpr const char* get_filename_impl(const char* s, const char* last) noexcept
+{
+    return (*s == '\0')
+           ? last
+           : ((*s == '/' || *s == '\\')
+                 ? get_filename_impl(s + 1, s + 1)
+                 : get_filename_impl(s + 1, last));
 }
 
-template <typename Func>
+constexpr const char* get_filename(const char* s) noexcept
+{
+    return get_filename_impl(s, s);
+}
+
+template <typename F>
 class Defer {
 public:
-    Defer(Func func) : func_(func) {}
-    ~Defer() { this->func_(); }
+    explicit Defer(F f) : func_(std::move(f)) {}
+    ~Defer() { func_(); }
 private:
-    Func func_;
+    F func_;
 };
 
-#define CONCAT(a, b) CONCAT_INNER(a, b)
-#define CONCAT_INNER(a, b) a ## b
-#define UNIQUE_NAME(base) CONCAT(base, __LINE__)
+template <typename F>
+Defer<F> make_defer(F f) { return Defer<F>(std::move(f)); }
 
-#define DEFER_CODE(code) Defer UNIQUE_NAME(defer_)([&]()code)
+#define CONCAT_INNER(a,b) a##b
+#define CONCAT(a,b)       CONCAT_INNER(a,b)
+#define UNIQUE_NAME(base) CONCAT(base,__LINE__)
 
-#define DEFER_FUNC(func, ...) DEFER_CODE({func(__VA_ARGS__);})
+#define DEFER_CODE(code)  auto UNIQUE_NAME(_defer_) = make_defer([&] code);
+#define DEFER_FUNC(func, ...) DEFER_CODE({ (func)(__VA_ARGS__); })
 
 template <typename Func>
-auto check_zero(char const* const filename, int const lineno, char const* const funcname, Func func)
+auto check_zero(char const* const filename, int const lineno, char const* const funcname, Func func) -> typename std::result_of<Func>::type
 {
     auto err = func();
     if (err != 0)
@@ -53,7 +63,7 @@ auto check_zero(char const* const filename, int const lineno, char const* const 
 
 
 template <typename Func>
-auto check_nonzero(char const* const filename, int const lineno, char const* const funcname, Func func)
+auto check_nonzero(char const* const filename, int const lineno, char const* const funcname, Func func) -> typename std::result_of<Func>::type
 {
     auto err = func();
     if (err == 0)
@@ -77,7 +87,7 @@ auto check_nonzero(char const* const filename, int const lineno, char const* con
 
 
 template <typename CheckerFunc, typename Func>
-auto check_value(char const* const filename, int const lineno, CheckerFunc checker_func, char const* const funcname, Func func)
+auto check_value(char const* const filename, int const lineno, CheckerFunc checker_func, char const* const funcname, Func func) -> typename std::result_of<Func>::type
 {
     auto value = func();
     auto err = checker_func(value);
@@ -98,4 +108,3 @@ auto check_value(char const* const filename, int const lineno, CheckerFunc check
 
 
 #define CHECK_VALUE(checker_code, func, ...) check_value(get_filename(__FILE__), __LINE__, [&](auto arg)checker_code, #func "(" #__VA_ARGS__ ")", [&](){return func(__VA_ARGS__);})
-

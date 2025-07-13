@@ -8,7 +8,7 @@ mkdir -p "${WORKDIR}"
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
 #  -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c 
-OPTARG=(-O3 -Xcompiler -fopenmp -std=c++17 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c)
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++11 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c)
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"

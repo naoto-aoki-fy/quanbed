@@ -47,7 +47,7 @@ namespace qcs {
         if (false) {
             func(args...);
         }
-        return ::cudaLaunchKernel((void*)func, gridDim, blockDim, ptrs, sharedMem, stream);
+        return ::cudaLaunchKernel((void const*)func, gridDim, blockDim, ptrs, sharedMem, stream);
     }
 }
 
