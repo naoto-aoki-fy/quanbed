@@ -12,7 +12,7 @@ WORKDIR="${WORKDIR%/}"
 mkdir -p "${WORKDIR}"
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
-OPTARG=(-O3 -Xcompiler -fopenmp -std=c++11 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./atlc/include)
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++11 -lcurand -lnccl -lssl -lcrypto --cudart=shared -rdc=true -I./atlc/include)
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"
