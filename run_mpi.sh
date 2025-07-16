@@ -1,5 +1,10 @@
 #!/bin/bash
 
+if [[ -v LD_PRELOAD ]]; then
+  LD_PRELOAD_SAVE="$LD_PRELOAD"
+  unset LD_PRELOAD
+fi
+
 set -e
 
 WORKDIR="20250513_debug"
@@ -7,8 +12,7 @@ WORKDIR="${WORKDIR%/}"
 mkdir -p "${WORKDIR}"
 
 DATENOW="$(date +%Y%m%d_%H%M_%S)"
-#  -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c 
-OPTARG=(-O3 -Xcompiler -fopenmp -std=c++11 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./cdl86 ./mynccl.cpp ./cdl86/cdl.c -I./atlc/include)
+OPTARG=(-O3 -Xcompiler -fopenmp -std=c++11 -lcurand -lnccl -lssl -lcrypto -rdc=true -I./atlc/include)
 
 HOSTNAME_FQDN="$(hostname)"
 HOSTNAME="${HOSTNAME_FQDN%%.*}"
@@ -82,8 +86,12 @@ nvcc \
 # export NCCL_DEBUG=TRACE
 # -host "${HOSTNAME_FQDN%%.*}"
 # -x LD_PRELOAD=./mynccl.so 
-mpirun --oversubscribe -np 8 ./"${EXE_FN}"
-# mpirun -np 1 ./"${EXE_FN}"
+
+MPIRUN_ARGS=()
+if [[ -v LD_PRELOAD_SAVE ]]; then
+  MPIRUN_ARGS+=(-x LD_PRELOAD="$LD_PRELOAD_SAVE")
+fi
+mpirun "${MPIRUN_ARGS[@]}" --oversubscribe -np 8 ./"${EXE_FN}"
 
 set +x
 set +e

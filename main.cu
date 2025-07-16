@@ -37,7 +37,7 @@
 #include <atlc/check_nccl.hpp>
 // #include "check_nvshmemx.hpp"
 
-#include "mynccl.h"
+// #include "mynccl.h"
 
 namespace qcs {
     typedef double float_t;
@@ -1223,7 +1223,6 @@ void dispose() {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
-    myncclPatch();
     qcs::simulator simulator(argc, argv);
     return simulator.main(argc, argv);
 }
