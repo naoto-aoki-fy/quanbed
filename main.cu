@@ -29,6 +29,8 @@
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"
 #include "reorder_macro.h"
+
+#include <atlc/cuda.hpp>
 #include <atlc/check_mpi.hpp>
 #include <atlc/check_cuda.hpp>
 #include <atlc/check_curand.hpp>
@@ -40,15 +42,6 @@
 namespace qcs {
     typedef double float_t;
     typedef cuda::std::complex<qcs::float_t> complex_t;
-
-    template<typename KernelType, typename... Args>
-    cudaError_t cudaLaunchKernel(KernelType func, dim3 gridDim, dim3 blockDim, size_t sharedMem, cudaStream_t stream, Args... args) {
-        void* ptrs[] = {(void*)&args...};
-        if (false) {
-            func(args...);
-        }
-        return ::cudaLaunchKernel((void const*)func, gridDim, blockDim, ptrs, sharedMem, stream);
-    }
 }
 
 __global__ void norm_sum_reduce_kernel(qcs::complex_t const* const input_global, qcs::float_t* const output_global)
@@ -628,7 +621,7 @@ void initialize_sequential() {
     // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
     // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
 
-    ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
+    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
 
 }
 
@@ -731,7 +724,7 @@ void normalize_statevector() {
             num_blocks_reduce = 1;
         }
 
-        ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
+        ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
 
         data_length = num_blocks_reduce;
 
@@ -744,7 +737,7 @@ void normalize_statevector() {
                 num_blocks_reduce = 1;
             }
 
-            ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
+            ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
 
             data_length = num_blocks_reduce;
         }
@@ -776,7 +769,7 @@ void normalize_statevector() {
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
+    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
@@ -1028,7 +1021,7 @@ void operate_gate() {
     uint64_t const block_size_gateop = 1ULL << log_block_size_gateop;
 
     // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
-    ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
+    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
     // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 }
 
