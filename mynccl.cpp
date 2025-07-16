@@ -155,26 +155,26 @@ static ncclResult_t myncclGroupEnd() {
         myncclHandleOffset handle_offset;
         void* const buffer = myncclGetClosestPointer(myncclCommStructPrivate.send_args[i].buff, &handle_offset.offset);
         // fprintf(stderr, "[debug] myncclGetClosestPointer=%p offset=%p\n", buffer, handle_offset.offset);
-        CHECK_CUDA(cudaIpcGetMemHandle, &handle_offset.handle, buffer);
-        CHECK_MPI(MPI_Isend, &handle_offset, sizeof(myncclHandleOffset), MPI_BYTE, myncclCommStructPrivate.send_args[i].peer, 0, MPI_COMM_WORLD, &myncclCommStructPrivate.mpi_request_list[mpi_request_idx]);
+        ATLC_CHECK_CUDA(cudaIpcGetMemHandle, &handle_offset.handle, buffer);
+        ATLC_CHECK_MPI(MPI_Isend, &handle_offset, sizeof(myncclHandleOffset), MPI_BYTE, myncclCommStructPrivate.send_args[i].peer, 0, MPI_COMM_WORLD, &myncclCommStructPrivate.mpi_request_list[mpi_request_idx]);
         mpi_request_idx++;
     }
 
     /* recv memhandle from peer */
     myncclCommStructPrivate.src_buff_handle_list.resize(myncclCommStructPrivate.recv_args.size());
     for (size_t i = 0; i < myncclCommStructPrivate.send_args.size(); ++i) {
-        CHECK_MPI(MPI_Irecv, &myncclCommStructPrivate.src_buff_handle_list[i], sizeof(myncclHandleOffset), MPI_BYTE, myncclCommStructPrivate.recv_args[i].peer, 0, MPI_COMM_WORLD, &myncclCommStructPrivate.mpi_request_list[mpi_request_idx]);
+        ATLC_CHECK_MPI(MPI_Irecv, &myncclCommStructPrivate.src_buff_handle_list[i], sizeof(myncclHandleOffset), MPI_BYTE, myncclCommStructPrivate.recv_args[i].peer, 0, MPI_COMM_WORLD, &myncclCommStructPrivate.mpi_request_list[mpi_request_idx]);
         mpi_request_idx++;
     }
 
     /* wait for all send/recv requests to finish */
-    CHECK_MPI(MPI_Waitall, myncclCommStructPrivate.mpi_request_list.size(), myncclCommStructPrivate.mpi_request_list.data(), MPI_STATUSES_IGNORE);
+    ATLC_CHECK_MPI(MPI_Waitall, myncclCommStructPrivate.mpi_request_list.size(), myncclCommStructPrivate.mpi_request_list.data(), MPI_STATUSES_IGNORE);
 
     /* open memhandle and copy data */
     myncclCommStructPrivate.src_buff_list.resize(myncclCommStructPrivate.src_buff_handle_list.size());
     for (size_t i = 0; i < myncclCommStructPrivate.src_buff_handle_list.size(); ++i) {
         cudaIpcOpenMemHandle(&myncclCommStructPrivate.src_buff_list[i], myncclCommStructPrivate.src_buff_handle_list[i].handle, cudaIpcMemLazyEnablePeerAccess);
-        CHECK_CUDA(
+        ATLC_CHECK_CUDA(
             cudaMemcpyAsync,
             myncclCommStructPrivate.recv_args[i].buff,
             /* myncclCommStructPrivate.src_buff_list[i] */
@@ -186,22 +186,22 @@ static ncclResult_t myncclGroupEnd() {
     }
 
     /* synchronize streams */
-    CHECK_CUDA(cudaStreamSynchronize, myncclCommStructPrivate.recv_args[0].stream);
+    ATLC_CHECK_CUDA(cudaStreamSynchronize, myncclCommStructPrivate.recv_args[0].stream);
     for (size_t i = 1; i < myncclCommStructPrivate.send_args.size(); ++i) {
         if (myncclCommStructPrivate.recv_args[i].stream != myncclCommStructPrivate.recv_args[i - 1].stream) {
-            CHECK_CUDA(cudaStreamSynchronize, myncclCommStructPrivate.recv_args[i].stream);
+            ATLC_CHECK_CUDA(cudaStreamSynchronize, myncclCommStructPrivate.recv_args[i].stream);
         }
     }
 
     /* close memhandle */
     for (size_t i = 0; i < myncclCommStructPrivate.src_buff_list.size(); ++i) {
-        CHECK_CUDA(cudaIpcCloseMemHandle, myncclCommStructPrivate.src_buff_list[i]);
+        ATLC_CHECK_CUDA(cudaIpcCloseMemHandle, myncclCommStructPrivate.src_buff_list[i]);
     }
 
     /* free send/recv args */
 
     /* synchronize */
-    CHECK_MPI(MPI_Barrier, MPI_COMM_WORLD);
+    ATLC_CHECK_MPI(MPI_Barrier, MPI_COMM_WORLD);
 
     myncclCommStructPrivate.in_group = false;
     return ncclSuccess;
@@ -227,11 +227,11 @@ static ncclResult_t myncclRecv(void* recvbuff, uint64_t count, int datatype, int
     } else {
         // not yet tested
         myncclHandleOffset handle_offset;
-        CHECK_MPI(MPI_Recv, &handle_offset, sizeof(myncclHandleOffset), MPI_BYTE, peer, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        ATLC_CHECK_MPI(MPI_Recv, &handle_offset, sizeof(myncclHandleOffset), MPI_BYTE, peer, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         void* sendbuff;
         cudaIpcOpenMemHandle(&sendbuff, handle_offset.handle, cudaIpcMemLazyEnablePeerAccess);
-        CHECK_CUDA(cudaMemcpy, recvbuff, (void*)((uint64_t)sendbuff + handle_offset.offset), count * myncclSizeofNcclDataType(datatype), cudaMemcpyDeviceToDevice);
-        CHECK_CUDA(cudaIpcCloseMemHandle, sendbuff);
+        ATLC_CHECK_CUDA(cudaMemcpy, recvbuff, (void*)((uint64_t)sendbuff + handle_offset.offset), count * myncclSizeofNcclDataType(datatype), cudaMemcpyDeviceToDevice);
+        ATLC_CHECK_CUDA(cudaIpcCloseMemHandle, sendbuff);
     }
     return ncclSuccess;
 }

@@ -29,10 +29,10 @@
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"
 #include "reorder_macro.h"
-#include "check_mpi.hpp"
-#include "check_cuda.hpp"
-#include "check_curand.hpp"
-#include "check_nccl.hpp"
+#include <check_mpi.hpp>
+#include <check_cuda.hpp>
+#include <check_curand.hpp>
+#include <check_nccl.hpp>
 // #include "check_nvshmemx.hpp"
 
 #include "mynccl.h"
@@ -527,15 +527,15 @@ void setup(int num_rand_areas_times_num_procs) {
     // gpu_id = proc_num;
     gpu_id = my_node_local_rank;
     // gpu_id = 0;
-    CHECK_CUDA(cudaSetDevice, gpu_id);
+    ATLC_CHECK_CUDA(cudaSetDevice, gpu_id);
 
     if (proc_num == 0) {
-        CHECK_NCCL(ncclGetUniqueId, &nccl_id);
+        ATLC_CHECK_NCCL(ncclGetUniqueId, &nccl_id);
     }
 
     MPI_Bcast(&nccl_id, sizeof(nccl_id), MPI_BYTE, 0, MPI_COMM_WORLD);
     nccl_rank = proc_num;
-    CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
+    ATLC_CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
     num_qubits = 14;
     if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
@@ -561,14 +561,14 @@ void setup(int num_rand_areas_times_num_procs) {
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
 
-    CHECK_CUDA(cudaStreamCreate, &stream);
-    // DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
+    ATLC_CHECK_CUDA(cudaStreamCreate, &stream);
+    // ATLC_DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
 
-    CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
-    // DEFER_CHECK_CUDA(cudaEventDestroy, event_1);
+    ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
+    // ATLC_DEFER_CHECK_CUDA(cudaEventDestroy, event_1);
 
-    CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
-    // DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
+    ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
+    // ATLC_DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
 
     num_states = 1ULL << num_qubits;
 
@@ -581,33 +581,33 @@ void setup(int num_rand_areas_times_num_procs) {
     if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
     if (use_unified_memory) {
-        CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
-        CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
+        ATLC_CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
+        ATLC_CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
     } else {
-        CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
+        ATLC_CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
     }
-    // DEFER_CHECK_CUDA(cudaFree, state_data_device);
+    // ATLC_DEFER_CHECK_CUDA(cudaFree, state_data_device);
 
-    CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
+    ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
 
     qcs_kernel_common_host.num_qubits = num_qubits;
     qcs_kernel_common_host.state_data_device = state_data_device;
-    CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
+    ATLC_CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
 
-    CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
+    ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
 
     // qcs::kernel_input_qnlist_struct* qcs_kernel_input_host = (qcs::kernel_input_qnlist_struct*)malloc(QCS_KERNEL_INPUT_SIZE);
-    // DEFER_FUNC(free, qcs_kernel_input_host);
+    // ATLC_DEFER_FUNC(free, qcs_kernel_input_host);
 
     log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
     // log_swap_buffer_total_length = num_qubits_local;
     swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
-    CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
-    // CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
-    // DEFER_CHECK_CUDA(cudaFree, swap_buffer);
+    ATLC_CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
+    // ATLC_CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
+    // ATLC_DEFER_CHECK_CUDA(cudaFree, swap_buffer);
 
-    CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t));
-    // DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
+    ATLC_CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t));
+    // ATLC_DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
 }
 
 void initialize_sequential() {
@@ -615,7 +615,7 @@ void initialize_sequential() {
     // for (uint64_t state_num_local = 0; state_num_local < num_states_local; state_num_local++) {
     //     state_data_host[state_num_local] = state_num_local + proc_num * num_states_local;
     // }
-    // CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(qcs::complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
+    // ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(qcs::complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
     uint64_t num_blocks_init;
     uint64_t block_size_init;
     if (num_qubits_local >= log_block_size_max) {
@@ -628,14 +628,14 @@ void initialize_sequential() {
     // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
     // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
 
-    CHECK_CUDA(qcs::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
+    ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
 
 }
 
 void initialize_zero() {
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
-        CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::float_t), cudaMemcpyHostToDevice, stream);
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::float_t), cudaMemcpyHostToDevice, stream);
     }
 }
 
@@ -645,18 +645,18 @@ void initialize_use_curand() {
     if (proc_num == 0) { fprintf(stderr, "[info] generating random state\n"); }
     curandGenerator_t rng_device;
 
-    // CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-    // CHECK_CURAND(curandSetStream, rng_device, stream);
-    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
+    // ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+    // ATLC_CHECK_CURAND(curandSetStream, rng_device, stream);
+    // ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
 
-    CHECK_CUDA(cudaEventRecord, event_1, stream);
+    ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
 
     // if (false) {
-    //     CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-    //     CHECK_CURAND(curandSetStream, rng_device, stream);
-    //     CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
-    //     CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local * 2 /* complex */, 0.0, 1.0);
-    //     CHECK_CURAND(curandDestroyGenerator, rng_device);
+    //     ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+    //     ATLC_CHECK_CURAND(curandSetStream, rng_device, stream);
+    //     ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
+    //     ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local * 2 /* complex */, 0.0, 1.0);
+    //     ATLC_CHECK_CURAND(curandDestroyGenerator, rng_device);
     // } else
     {
         // int const num_rand_areas = 4;
@@ -664,23 +664,23 @@ void initialize_use_curand() {
         // if (log_num_rand_areas!=1) { throw; }
         uint64_t const num_states_rand_area = num_states_local >> log_num_rand_areas;
         for (int rand_area_num = 0; rand_area_num < num_rand_areas; rand_area_num++) {
-            CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-            CHECK_CURAND(curandSetStream, rng_device, stream);
-            CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * num_rand_areas + rand_area_num);
-            CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)(state_data_device + num_states_rand_area * ((uint64_t)rand_area_num)), num_states_rand_area * 2 /* complex */, 0.0, 1.0);
-            CHECK_CURAND(curandDestroyGenerator, rng_device);
+            ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
+            ATLC_CHECK_CURAND(curandSetStream, rng_device, stream);
+            ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * num_rand_areas + rand_area_num);
+            ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)(state_data_device + num_states_rand_area * ((uint64_t)rand_area_num)), num_states_rand_area * 2 /* complex */, 0.0, 1.0);
+            ATLC_CHECK_CURAND(curandDestroyGenerator, rng_device);
         }
     }
-    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
-    // CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
+    // ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
+    // ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
 
     // curandGenerator_t rng_device_2;
 
-    // CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
-    // CHECK_CURAND(curandSetStream, rng_device_2, stream);
-    // CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + proc_num * 2 + 1);
+    // ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
+    // ATLC_CHECK_CURAND(curandSetStream, rng_device_2, stream);
+    // ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + proc_num * 2 + 1);
 
-    // CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((qcs::float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
+    // ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((qcs::float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
 }
 
 void initialize_laod_statevector() {
@@ -690,7 +690,7 @@ void initialize_laod_statevector() {
     if (proc_num == 0) { fprintf(stderr, "[info] load statevector\n"); }
 
     qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
-    DEFER_FUNC(free, state_data_host);
+    ATLC_DEFER_FUNC(free, state_data_host);
 
     for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
         if (proc_num_active == proc_num) {
@@ -705,13 +705,13 @@ void initialize_laod_statevector() {
             }
             fclose(fp);
 
-            CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host, num_states_local * sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+            ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host, num_states_local * sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
 
         }
         MPI_Barrier(MPI_COMM_WORLD);
     }
 
-    CHECK_CUDA(cudaStreamSynchronize, stream);
+    ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 }
 
 void normalize_statevector() {
@@ -731,7 +731,7 @@ void normalize_statevector() {
             num_blocks_reduce = 1;
         }
 
-        CHECK_CUDA(qcs::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
+        ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
 
         data_length = num_blocks_reduce;
 
@@ -744,7 +744,7 @@ void normalize_statevector() {
                 num_blocks_reduce = 1;
             }
 
-            CHECK_CUDA(qcs::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
+            ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
 
             data_length = num_blocks_reduce;
         }
@@ -753,15 +753,15 @@ void normalize_statevector() {
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
     qcs::float_t norm_sum_local;
-    CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(qcs::float_t), cudaMemcpyDeviceToHost, stream);
+    ATLC_CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(qcs::float_t), cudaMemcpyDeviceToHost, stream);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    CHECK_CUDA(cudaFree, (void*)norm_sum_device);
+    ATLC_CHECK_CUDA(cudaFree, (void*)norm_sum_device);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    CHECK_CUDA(cudaStreamSynchronize, stream);
+    ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
@@ -776,19 +776,19 @@ void normalize_statevector() {
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
+    ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    CHECK_CUDA(cudaEventRecord, event_2, stream);
+    ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    CHECK_CUDA(cudaStreamSynchronize, stream);
+    ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
+    ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
@@ -847,8 +847,8 @@ void ensure_local_qubits() {
         // global_nonswap_self = make proc_num_self's a_delta_i-th digit zero
         uint64_t const global_nonswap_self = proc_num & ~global_swap_self_mask;
 
-        CHECK_CUDA(cudaStreamSynchronize, stream);
-        CHECK_MPI(MPI_Barrier, MPI_COMM_WORLD);
+        ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
+        ATLC_CHECK_MPI(MPI_Barrier, MPI_COMM_WORLD);
 
         // 1<<(num_local_qubits - b_min) 
         uint64_t const num_local_areas = UINT64_C(1) << (num_qubits_local - swap_target_local_min);
@@ -875,16 +875,16 @@ void ensure_local_qubits() {
 
             bool is_peer_greater = proc_num_peer > proc_num;
             for (uint64_t buffer_pos = 0; buffer_pos < local_buf_length; buffer_pos += swap_buffer_length) {
-                CHECK_NCCL(ncclGroupStart);
+                ATLC_CHECK_NCCL(ncclGroupStart);
                 for (int send_recv = 0; send_recv < 2; send_recv++) {
                     if (send_recv ^ is_peer_greater) {
-                        CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                        ATLC_CHECK_NCCL(ncclSend, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
                     } else {
-                        CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
+                        ATLC_CHECK_NCCL(ncclRecv, swap_buffer, swap_buffer_length * 2 /* complex */, ncclDouble, proc_num_peer, nccl_comm, stream);
                     }
                 }
-                CHECK_NCCL(ncclGroupEnd);
-                CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(qcs::complex_t), cudaMemcpyDeviceToDevice, stream);
+                ATLC_CHECK_NCCL(ncclGroupEnd);
+                ATLC_CHECK_CUDA(cudaMemcpyAsync, &state_data_device[local_num_self * local_buf_length + buffer_pos], swap_buffer, swap_buffer_length * sizeof(qcs::complex_t), cudaMemcpyDeviceToDevice, stream);
             }
 
         }
@@ -1011,7 +1011,7 @@ void operate_gate() {
         qubit_num_list_sorted_kernel_arg[qni] = operand_qubit_num_list[qni];
     }
 
-    CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_input_constant_addr, qcs_kernel_input_host, qkiqn_size, cudaMemcpyHostToDevice, stream);
+    ATLC_CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_input_constant_addr, qcs_kernel_input_host, qkiqn_size, cudaMemcpyHostToDevice, stream);
 
     uint64_t const log_num_threads = num_qubits_local - num_operand_qubits;
     uint64_t log_block_size_gateop;
@@ -1028,7 +1028,7 @@ void operate_gate() {
     uint64_t const block_size_gateop = 1ULL << log_block_size_gateop;
 
     // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
-    CHECK_CUDA(qcs::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
+    ATLC_CHECK_CUDA(qcs::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
     // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 }
 
@@ -1038,9 +1038,9 @@ void save_statevector() {
     if (proc_num == 0) { fprintf(stderr, "[info] dump statevector\n"); }
 
     qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
-    DEFER_FUNC(free, state_data_host);
+    ATLC_DEFER_FUNC(free, state_data_host);
 
-    CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+    ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
 
     for(int proc_num_active=0; proc_num_active<num_procs; proc_num_active++) {
         if (proc_num_active == proc_num) {
@@ -1097,14 +1097,14 @@ void calculate_checksum() {
         }
 
         qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states * sizeof(qcs::complex_t));
-        DEFER_FUNC(free, state_data_host);
+        ATLC_DEFER_FUNC(free, state_data_host);
 
-        CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
         for(int peer_proc_num=1; peer_proc_num<num_procs; peer_proc_num++) {
             MPI_Status mpi_status;
             MPI_Recv(&state_data_host[peer_proc_num * num_states_local], num_states_local * 2, MPI_DOUBLE, peer_proc_num, 0, MPI_COMM_WORLD, &mpi_status);
         }
-        CHECK_CUDA(cudaStreamSynchronize, stream);
+        ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 
         for(int64_t state_num_logical = 0; state_num_logical < num_states; state_num_logical++) {
             int64_t state_num_physical = 0;
@@ -1150,7 +1150,7 @@ int main(int argc, char** argv) {
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
-    DEFER_FUNC(dispose);
+    ATLC_DEFER_FUNC(dispose);
 
     switch (initstate_choice) {
         case initstate_enum::sequential:
@@ -1179,7 +1179,7 @@ int main(int argc, char** argv) {
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
-        CHECK_CUDA(cudaEventRecord, event_1, stream);
+        ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
 
         for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
         {
@@ -1193,11 +1193,11 @@ int main(int argc, char** argv) {
 
         } /* target_qubit_num_logical loop */
 
-        CHECK_CUDA(cudaEventRecord, event_2, stream);
+        ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
 
-        CHECK_CUDA(cudaStreamSynchronize, stream);
+        ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 
-        CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
+        ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
 
         MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
         elapsed_ms = elapsed_ms_2;
@@ -1218,11 +1218,11 @@ int main(int argc, char** argv) {
 };
 
 void dispose() {
-    CHECK_CUDA(cudaStreamDestroy, stream);
-    CHECK_CUDA(cudaEventDestroy, event_1);
-    CHECK_CUDA(cudaEventDestroy, event_2);
-    CHECK_CUDA(cudaFree, state_data_device);
-    CHECK_CUDA(cudaFree, swap_buffer);
+    ATLC_CHECK_CUDA(cudaStreamDestroy, stream);
+    ATLC_CHECK_CUDA(cudaEventDestroy, event_1);
+    ATLC_CHECK_CUDA(cudaEventDestroy, event_2);
+    ATLC_CHECK_CUDA(cudaFree, state_data_device);
+    ATLC_CHECK_CUDA(cudaFree, swap_buffer);
 };
 
 };
