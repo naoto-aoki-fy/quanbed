@@ -26,18 +26,13 @@
 #include <nccl.h>
 #include <openssl/evp.h>
 
-#include "log2_int.hpp"
-#include "group_by_hostname.hpp"
-#include "reorder_macro.h"
-
+#include <atlc/log2_int.hpp>
+#include <atlc/mpi.hpp>
 #include <atlc/cuda.hpp>
 #include <atlc/check_mpi.hpp>
 #include <atlc/check_cuda.hpp>
 #include <atlc/check_curand.hpp>
 #include <atlc/check_nccl.hpp>
-// #include "check_nvshmemx.hpp"
-
-// #include "mynccl.h"
 
 namespace qcs {
     typedef double float_t;
@@ -512,7 +507,7 @@ void setup(int num_rand_areas_times_num_procs) {
 
     num_rand_areas = num_rand_areas_times_num_procs / num_procs;
 
-    group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
+    atlc::group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
     fprintf(stderr,
             "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
             proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
@@ -545,7 +540,7 @@ void setup(int num_rand_areas_times_num_procs) {
     num_samples = 1;
     rng_seed = 12345;
 
-    log_num_procs = log2_int(num_procs);
+    log_num_procs = atlc::log2_int(num_procs);
 
     log_block_size_max = 9;
     target_qubit_num_begin = 0;
@@ -653,7 +648,7 @@ void initialize_use_curand() {
     // } else
     {
         // int const num_rand_areas = 4;
-        int const log_num_rand_areas = log2_int(num_rand_areas);
+        int const log_num_rand_areas = atlc::log2_int(num_rand_areas);
         // if (log_num_rand_areas!=1) { throw; }
         uint64_t const num_states_rand_area = num_states_local >> log_num_rand_areas;
         for (int rand_area_num = 0; rand_area_num < num_rand_areas; rand_area_num++) {
