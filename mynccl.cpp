@@ -8,12 +8,12 @@
 #include <mpi.h>
 #include <cuda_runtime.h>
 
-#include "check_mpi.hpp"
-#include "check_cuda.hpp"
+#include <atlc/check_mpi.hpp>
+#include <atlc/check_cuda.hpp>
 
 #include <cdl.h>
 
-#include "check_x.hpp"
+#include <atlc/check_x.hpp>
 
 typedef struct {
     cudaIpcMemHandle_t handle;

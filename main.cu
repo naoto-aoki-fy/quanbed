@@ -29,10 +29,10 @@
 #include "log2_int.hpp"
 #include "group_by_hostname.hpp"
 #include "reorder_macro.h"
-#include <check_mpi.hpp>
-#include <check_cuda.hpp>
-#include <check_curand.hpp>
-#include <check_nccl.hpp>
+#include <atlc/check_mpi.hpp>
+#include <atlc/check_cuda.hpp>
+#include <atlc/check_curand.hpp>
+#include <atlc/check_nccl.hpp>
 // #include "check_nvshmemx.hpp"
 
 #include "mynccl.h"
