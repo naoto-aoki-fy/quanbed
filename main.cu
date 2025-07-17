@@ -23,6 +23,7 @@
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <cuda/std/complex>
+#include <cub/cub.cuh>
 #include <nccl.h>
 #include <openssl/evp.h>
 
@@ -483,6 +484,9 @@ std::vector<int> negative_control_qubit_num_physical_list;
 std::vector<int> negative_control_qubit_num_physical_global_list;
 std::vector<int> negative_control_qubit_num_physical_local_list;
 
+std::vector<int> measured_1_qubit_num_logical_list;
+std::vector<int> measured_0_qubit_num_logical_list;
+
 std::vector<int> target_qubit_num_logical_list;
 std::vector<int> positive_control_qubit_num_logical_list;
 std::vector<int> negative_control_qubit_num_logical_list;
@@ -537,7 +541,7 @@ void setup(int num_rand_areas_times_num_procs) {
     }
 
     // num_samples = 64;
-    num_samples = 1;
+    num_samples = 1ULL << num_qubits;
     rng_seed = 12345;
 
     log_num_procs = atlc::log2_int(num_procs);
@@ -1131,12 +1135,55 @@ void calculate_checksum() {
 
 }
 
+struct IndirectLoad
+{
+    __host__ __device__ __forceinline__
+    qcs::complex_t operator()(uint64_t thread_num) const
+    {
+#ifdef __CUDA_ARCH__
+        auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
+
+        uint64_t index_state_0 = 0;
+
+        int const num_operand_qubits = args->get_num_operand_qubits();
+        int const* const qubit_num_list_sorted = args->get_operand_qubit_num_list_sorted();
+
+        // generate index_state_0
+        // ignoring positive control qubits
+        uint64_t lower_mask = 0;
+        for(int i = 0; i < num_operand_qubits; i++) {
+            uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
+            uint64_t const upper_mask = mask & ~lower_mask;
+            lower_mask = mask;
+            index_state_0 |= (thread_num & upper_mask) << i;
+        }
+        index_state_0 |= (thread_num & ~lower_mask) << num_operand_qubits;
+
+        // update index_state_0
+        // considering positive control qubits
+        int const* const positive_control_qubit_num_list = args->get_positive_control_qubit_num_list();
+        for(int i = 0; i < args->num_positive_control_qubits; i++) {
+            index_state_0 |= 1ULL << positive_control_qubit_num_list[i];
+        }
+
+        // generate index_state_1
+        // num_target_qubits == 1
+        auto const target_qubit_num = args->get_target_qubit_num_list()[0];
+        uint64_t const index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+
+        return {cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]), cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])};
+#else
+        return 0;
+#endif
+    }
+};
+
 int main(int argc, char** argv) {
 
-    flag_normalize = true;
+    flag_normalize = false;
     flag_calculate_checksum = true;
     use_unified_memory = false;
-    initstate_choice = initstate_enum::zero;
+    initstate_choice = initstate_enum::use_curand;
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
@@ -1161,11 +1208,117 @@ int main(int argc, char** argv) {
 
     if (flag_normalize) { normalize_statevector(); }
 
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if(proc_num==0) {
+        fprintf(stderr, "[info] gpu measurement\n");
+    }
+
+    // std::random_device seed_gen;
+    // auto const seed = seed_gen();
+    std::mt19937 engine(rng_seed);
+
+    for(int sample_num=0; sample_num < num_samples; ++sample_num) {
+
+        measured_0_qubit_num_logical_list.clear();
+        measured_1_qubit_num_logical_list.clear();
+        uint64_t measured_bit = 0;
+
+        for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+
+            target_qubit_num_logical_list = {measure_qubit_num_logical};
+            positive_control_qubit_num_logical_list = measured_1_qubit_num_logical_list;
+            negative_control_qubit_num_logical_list = measured_0_qubit_num_logical_list;
+
+            check_control_qubit_num_physical();
+
+            qcs::complex_t measure_norm_host;
+
+            if (control_condition) {
+                using CountingIter = cub::CountingInputIterator<uint64_t>;
+                using TransformIter = cub::TransformInputIterator<qcs::complex_t, IndirectLoad, CountingIter>;
+
+                IndirectLoad loader;
+                CountingIter counting(0);
+                TransformIter in_it(counting, loader);
+
+                qcs::complex_t* measure_norm_device;
+                ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
+
+                size_t temp_sz = 0;
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, NULL, temp_sz, in_it, measure_norm_device, num_states_local, stream);
+
+                void* d_temp;
+                ATLC_CHECK_CUDA(cudaMallocAsync, &d_temp, temp_sz, stream);
+
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, d_temp, temp_sz, in_it, measure_norm_device, num_states_local, stream);
+
+                ATLC_CHECK_CUDA(cudaFreeAsync, d_temp, stream);
+
+
+                ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+
+                ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
+            } else {
+                measure_norm_host = 0;
+            }
+
+#if 1 /* parallel measurement */
+            qcs::complex_t measure_norm_global;
+            MPI_Allreduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+            qcs::float_t const measure_norm_sum = measure_norm_global.real() + measure_norm_global.imag();
+
+            std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
+            qcs::float_t const random_value = dist1(engine);
+            bool measure_result = measure_norm_global.real() < random_value;
+
+            if (measure_result) { /* 1 */
+                measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+                measured_bit |= 1ULL << measure_qubit_num_logical;
+            } else { /* 0 */
+                measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+            }
+#else /* measurement by master */
+            qcs::complex_t measure_norm_global;
+            MPI_Reduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            // MPI_Allreduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+            bool measure_result_0;
+            if (proc_num == 0) {
+                qcs::float_t const measure_norm_sum = measure_norm_global.real() + measure_norm_global.imag();
+
+                std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
+                qcs::float_t const random_value = dist1(engine);
+                measure_result_0 = measure_norm_global.real() < random_value;
+            }
+            bool measure_result;
+            MPI_Scatter(&measure_result_0, 1, MPI_C_BOOL, &measure_result, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+
+            if (measure_result) { /* 1 */
+                measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+                measured_bit |= 1ULL << measure_qubit_num_logical;
+            } else { /* 0 */
+                measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+            }
+#endif
+
+            // if (proc_num == 0) {
+            //     fprintf(stderr, "[debug] qubit[%d]=%d\n", measure_qubit_num_logical, (int)measure_result);
+            // }
+
+        }
+
+        if (proc_num == 0) {
+            fprintf(stdout, "%llu\n", measured_bit);
+        }
+    }
+
+
+#if 0
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu_hadamard\n");
     }
-
-    MPI_Barrier(MPI_COMM_WORLD);
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
@@ -1176,6 +1329,12 @@ int main(int argc, char** argv) {
             target_qubit_num_logical_list = {target_qubit_num_logical};
             positive_control_qubit_num_logical_list = {};
             negative_control_qubit_num_logical_list = {};
+
+            positive_control_qubit_num_logical_list.reserve(positive_control_qubit_num_logical_list.size() + measured_1_qubit_num_logical_list.size());
+            positive_control_qubit_num_logical_list.insert(positive_control_qubit_num_logical_list.end(), measured_1_qubit_num_logical_list.begin(), measured_1_qubit_num_logical_list.end());
+
+            negative_control_qubit_num_logical_list.reserve(negative_control_qubit_num_logical_list.size() + measured_0_qubit_num_logical_list.size());
+            negative_control_qubit_num_logical_list.insert(negative_control_qubit_num_logical_list.end(), measured_0_qubit_num_logical_list.begin(), measured_0_qubit_num_logical_list.end());
 
             ensure_local_qubits();
             check_control_qubit_num_physical();
@@ -1197,6 +1356,7 @@ int main(int argc, char** argv) {
         }
 
     }
+#endif
 
     if (flag_save_statevector) { save_statevector(); }
     if (flag_calculate_checksum) { calculate_checksum(); }
