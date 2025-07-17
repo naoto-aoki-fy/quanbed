@@ -572,9 +572,9 @@ void setup(int num_rand_areas_times_num_procs) {
         ATLC_CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
         ATLC_CHECK_CUDA(cudaMemAdvise, state_data_device, num_states_local * sizeof(*state_data_device), cudaMemAdviseSetPreferredLocation, gpu_id);
     } else {
-        ATLC_CHECK_CUDA(cudaMalloc, &state_data_device, num_states_local * sizeof(*state_data_device));
+        ATLC_CHECK_CUDA(cudaMallocAsync, &state_data_device, num_states_local * sizeof(*state_data_device), stream);
     }
-    // ATLC_DEFER_CHECK_CUDA(cudaFree, state_data_device);
+    // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, state_data_device, stream);
 
     ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
 
@@ -590,12 +590,13 @@ void setup(int num_rand_areas_times_num_procs) {
     log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
     // log_swap_buffer_total_length = num_qubits_local;
     swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
-    ATLC_CHECK_CUDA(cudaMalloc, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
+    ATLC_CHECK_CUDA(cudaMallocAsync, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t), stream);
     // ATLC_CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
-    // ATLC_DEFER_CHECK_CUDA(cudaFree, swap_buffer);
+    // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
 
-    ATLC_CHECK_CUDA(cudaMalloc, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t));
-    // ATLC_DEFER_CHECK_CUDA(cudaFree, norm_sum_device);
+    ATLC_CHECK_CUDA(cudaMallocAsync, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t), stream);
+    // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, norm_sum_device, stream);
+
 }
 
 void initialize_sequential() {
@@ -746,7 +747,7 @@ void normalize_statevector() {
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
-    ATLC_CHECK_CUDA(cudaFree, (void*)norm_sum_device);
+    ATLC_CHECK_CUDA(cudaFreeAsync, (void*)norm_sum_device, stream);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
@@ -1207,11 +1208,11 @@ int main(int argc, char** argv) {
 };
 
 void dispose() {
-    ATLC_CHECK_CUDA(cudaStreamDestroy, stream);
+    ATLC_CHECK_CUDA(cudaFreeAsync, state_data_device, stream);
+    ATLC_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
     ATLC_CHECK_CUDA(cudaEventDestroy, event_1);
     ATLC_CHECK_CUDA(cudaEventDestroy, event_2);
-    ATLC_CHECK_CUDA(cudaFree, state_data_device);
-    ATLC_CHECK_CUDA(cudaFree, swap_buffer);
+    ATLC_CHECK_CUDA(cudaStreamDestroy, stream);
 };
 
 };
