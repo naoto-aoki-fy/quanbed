@@ -706,6 +706,7 @@ void normalize_statevector() {
 
     if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); }
 
+    ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
     {
         uint64_t data_length = num_states_local;
         uint64_t num_blocks_reduce;
@@ -755,12 +756,12 @@ void normalize_statevector() {
 
     qcs::float_t norm_sum_global;
     MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
+    // if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
 
     if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
 
     qcs::float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
-    fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
+    // fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
 
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
@@ -786,7 +787,7 @@ void normalize_statevector() {
     // fprintf(stderr, "[debug] line=%d\n", __LINE__);
 
     if(proc_num==0) {
-        fprintf(stderr, "[info] rng elapsed=%lf\n", elapsed_ms * 1e-3);
+        fprintf(stderr, "[info] normalize elapsed=%lf\n", elapsed_ms * 1e-3);
         fprintf(stderr, "[info] normalize done\n");
     }
 }
@@ -1131,10 +1132,10 @@ void calculate_checksum() {
 
 int main(int argc, char** argv) {
 
-    flag_normalize = false;
+    flag_normalize = true;
     flag_calculate_checksum = true;
     use_unified_memory = false;
-    initstate_choice = initstate_enum::sequential;
+    initstate_choice = initstate_enum::zero;
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
