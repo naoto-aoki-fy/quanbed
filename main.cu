@@ -40,56 +40,6 @@ namespace qcs {
     typedef cuda::std::complex<qcs::float_t> complex_t;
 }
 
-__global__ void norm_sum_reduce_kernel(qcs::complex_t const* const input_global, qcs::float_t* const output_global)
-{
-    extern __shared__ qcs::float_t sum_shared[];
-    int64_t const idx =  blockDim.x * blockIdx.x + threadIdx.x;
-    sum_shared[threadIdx.x] = cuda::std::norm(input_global[idx]);
-
-    qcs::float_t sum_cached;
-    sum_cached = sum_shared[threadIdx.x];
-    for(int active_threads = blockDim.x; active_threads > 1;) {
-        int const half_active_threads = active_threads >> 1;
-        active_threads = (active_threads + 1) >> 1;
-        __syncthreads();
-        if(threadIdx.x < half_active_threads){
-            sum_cached += sum_shared[threadIdx.x + active_threads];
-            sum_shared[threadIdx.x] = sum_cached;
-        }
-    }
-    if (threadIdx.x == 0) {
-        output_global[blockIdx.x] = sum_shared[0];
-    }
-}
-
-__global__ void sum_reduce_kernel(qcs::float_t const* const input_global, qcs::float_t* const output_global)
-{
-    extern __shared__ qcs::float_t sum_shared[];
-    int64_t const idx =  blockDim.x * blockIdx.x + threadIdx.x;
-    sum_shared[threadIdx.x] = input_global[idx];
-
-    qcs::float_t sum_cached;
-    sum_cached = sum_shared[threadIdx.x];
-    for(int active_threads = blockDim.x; active_threads > 1;) {
-        int const half_active_threads = active_threads >> 1;
-        active_threads = (active_threads + 1) >> 1;
-        __syncthreads();
-        if(threadIdx.x < half_active_threads){
-            sum_cached += sum_shared[threadIdx.x + active_threads];
-            sum_shared[threadIdx.x] = sum_cached;
-        }
-    }
-    if (threadIdx.x == 0) {
-        output_global[blockIdx.x] = sum_shared[0];
-    }
-}
-
-__global__ void normalize_kernel(qcs::float_t* const data_global, qcs::float_t const factor)
-{
-    int64_t const idx = blockDim.x * blockIdx.x + threadIdx.x;
-    data_global[idx] *= factor;
-}
-
 #define QCS_KERNEL_INPUT_MAX_SIZE 256
 namespace qcs {
 
@@ -415,8 +365,6 @@ char** argv;
 
 int num_qubits;
 
-// **Note**: The `normalize_factor` may cause slight differences in calculation results due to parallel processing methods. As a result, normalization can lead to a mismatch in the checksum.
-bool flag_normalize;
 bool flag_calculate_checksum;
 bool use_unified_memory;
 
@@ -705,96 +653,6 @@ void initialize_laod_statevector() {
     }
 
     ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-}
-
-void normalize_statevector() {
-
-    if (proc_num == 0) { fprintf(stderr, "[info] gpu reduce\n"); }
-
-    ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
-    {
-        uint64_t data_length = num_states_local;
-        uint64_t num_blocks_reduce;
-        int block_size_reduce;
-
-        if (data_length > block_size_max) {
-            block_size_reduce = block_size_max;
-            num_blocks_reduce = data_length >> log_block_size_max;
-        } else {
-            block_size_reduce = data_length;
-            num_blocks_reduce = 1;
-        }
-
-        ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, norm_sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, state_data_device, norm_sum_device);
-
-        data_length = num_blocks_reduce;
-
-        while (data_length > 1) {
-            if (data_length > block_size_max) {
-                block_size_reduce = block_size_max;
-                num_blocks_reduce = data_length >> log_block_size_max;
-            } else {
-                block_size_reduce = data_length;
-                num_blocks_reduce = 1;
-            }
-
-            ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, sum_reduce_kernel, num_blocks_reduce, block_size_reduce, sizeof(qcs::float_t) * block_size_reduce, stream, norm_sum_device, norm_sum_device);
-
-            data_length = num_blocks_reduce;
-        }
-    }
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    qcs::float_t norm_sum_local;
-    ATLC_CHECK_CUDA(cudaMemcpyAsync, &norm_sum_local, norm_sum_device, sizeof(qcs::float_t), cudaMemcpyDeviceToHost, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    ATLC_CHECK_CUDA(cudaFreeAsync, (void*)norm_sum_device, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    qcs::float_t norm_sum_global;
-    MPI_Allreduce(&norm_sum_local, &norm_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    // if (proc_num == 0) { fprintf(stderr, "[info] norm_sum_global=%lf\n", norm_sum_global); }
-
-    if (proc_num == 0) { fprintf(stderr, "[info] normalize\n"); }
-
-    qcs::float_t const normalize_factor = 1.0 / sqrt(norm_sum_global);
-    // fprintf(stderr, "[debug] normalize_factor=%.20e\n", normalize_factor);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, normalize_kernel, 1ULL<<(num_qubits_local+1-log_block_size_max), block_size_max, 0, stream, (qcs::float_t*)(void*)state_data_device, normalize_factor);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-    elapsed_ms = elapsed_ms_2;
-
-    // fprintf(stderr, "[debug] line=%d\n", __LINE__);
-
-    if(proc_num==0) {
-        fprintf(stderr, "[info] normalize elapsed=%lf\n", elapsed_ms * 1e-3);
-        fprintf(stderr, "[info] normalize done\n");
-    }
 }
 
 void ensure_local_qubits() {
@@ -1180,7 +1038,6 @@ struct IndirectLoad
 
 int main(int argc, char** argv) {
 
-    flag_normalize = false;
     flag_calculate_checksum = true;
     use_unified_memory = false;
     initstate_choice = initstate_enum::use_curand;
@@ -1205,8 +1062,6 @@ int main(int argc, char** argv) {
         default:
             throw initstate_choice;
     }
-
-    if (flag_normalize) { normalize_statevector(); }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
