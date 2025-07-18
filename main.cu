@@ -1120,7 +1120,7 @@ int main(int argc, char** argv) {
     }
 #endif /* measurement */
 
-#if 1 /* hadamar */
+#if 1 /* gate operation */
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu_hadamard\n");
     }
