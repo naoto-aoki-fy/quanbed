@@ -47,7 +47,7 @@ namespace qcs {
     {
         uint64_t const num_threads = (uint64_t)gridDim.x * (uint64_t)blockDim.x;
         uint64_t const idx = (uint64_t)blockDim.x * (uint64_t)blockIdx.x + (uint64_t)threadIdx.x;
-        data_global[idx] = idx + num_threads * (uint64_t)proc_num;
+        data_global[idx] = idx + num_threads * proc_num;
     }
 
     struct kernel_common_struct {
@@ -328,6 +328,7 @@ namespace qcs {
 enum class initstate_enum {
     sequential,
     zero,
+    entangled,
     use_curand,
     laod_statevector,
 };
@@ -385,6 +386,7 @@ uint64_t num_states_local;
 
 uint64_t num_blocks_gateop;
 uint64_t block_size_gateop;
+uint64_t num_operand_qubits;
 
 qcs::complex_t* state_data_device;
 qcs::kernel_common_struct* qcs_kernel_common_constant_addr;
@@ -466,8 +468,8 @@ void setup(int num_rand_areas_times_num_procs) {
     }
 
     // num_samples = 64;
-    // num_samples = 1ULL << num_qubits;
-    num_samples = 1;
+    num_samples = 1ULL << num_qubits;
+    // num_samples = 1;
     rng_seed = 12345;
 
     log_num_procs = atlc::log2_int(num_procs);
@@ -554,7 +556,17 @@ void initialize_sequential() {
 void initialize_zero() {
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
-        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::float_t), cudaMemcpyHostToDevice, stream);
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+    }
+}
+
+void initialize_entangled() {
+    if (proc_num == 0) {
+        qcs::complex_t const one = 1;
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+    } else if (proc_num == num_procs - 1) {
+        qcs::complex_t const one = 1;
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device + num_states_local - 1, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
     }
 }
 
@@ -822,7 +834,7 @@ void prepare_operating_gate() {
         target_qubit_num_list_kernel_arg[tqi] = target_qubit_num_physical_list[tqi];
     }
 
-    auto const num_operand_qubits =
+    num_operand_qubits =
         positive_control_qubit_num_physical_local_list.size()
         + negative_control_qubit_num_physical_local_list.size()
         + target_qubit_num_physical_list.size();
@@ -989,7 +1001,7 @@ int main(int argc, char** argv) {
 
     flag_calculate_checksum = true;
     use_unified_memory = false;
-    initstate_choice = initstate_enum::sequential;
+    initstate_choice = initstate_enum::entangled;
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
@@ -1001,6 +1013,9 @@ int main(int argc, char** argv) {
             break;
         case initstate_enum::zero:
             initialize_zero();
+            break;
+        case initstate_enum::entangled:
+            initialize_entangled();
             break;
         case initstate_enum::use_curand:
             initialize_use_curand();
@@ -1014,7 +1029,7 @@ int main(int argc, char** argv) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-#if 0 /* measurement */
+#if 1 /* measurement */
 
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu measurement\n");
@@ -1036,7 +1051,9 @@ int main(int argc, char** argv) {
             positive_control_qubit_num_logical_list = measured_1_qubit_num_logical_list;
             negative_control_qubit_num_logical_list = measured_0_qubit_num_logical_list;
 
+            ensure_local_qubits();
             check_control_qubit_num_physical();
+            prepare_operating_gate();
 
             qcs::complex_t measure_norm_host;
 
@@ -1052,12 +1069,12 @@ int main(int argc, char** argv) {
                 ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
 
                 size_t temp_sz = 0;
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, NULL, temp_sz, in_it, measure_norm_device, num_states_local, stream);
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, NULL, temp_sz, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
 
                 void* d_temp;
                 ATLC_CHECK_CUDA(cudaMallocAsync, &d_temp, temp_sz, stream);
 
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, d_temp, temp_sz, in_it, measure_norm_device, num_states_local, stream);
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, d_temp, temp_sz, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
 
                 ATLC_CHECK_CUDA(cudaFreeAsync, d_temp, stream);
 
@@ -1121,7 +1138,7 @@ int main(int argc, char** argv) {
     }
 #endif /* measurement */
 
-#if 1 /* gate operation */
+#if 0 /* gate operation */
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu_hadamard\n");
     }
