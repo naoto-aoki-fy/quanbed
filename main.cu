@@ -208,41 +208,49 @@ namespace qcs {
 
 }
 
+static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& index_state_0, uint64_t& index_state_1) {
+    auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
+
+    // uint64_t index_state_0 = 0;
+    index_state_0 = 0;
+
+    int const num_operand_qubits = args->get_num_operand_qubits();
+    int const* const qubit_num_list_sorted = args->get_operand_qubit_num_list_sorted();
+
+    // generate index_state_0
+    // ignoring positive control qubits
+    uint64_t lower_mask = 0;
+    for(int i = 0; i < num_operand_qubits; i++) {
+        uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
+        uint64_t const upper_mask = mask & ~lower_mask;
+        lower_mask = mask;
+        index_state_0 |= (thread_num & upper_mask) << i;
+    }
+    index_state_0 |= (thread_num & ~lower_mask) << num_operand_qubits;
+
+    // update index_state_0
+    // considering positive control qubits
+    int const* const positive_control_qubit_num_list = args->get_positive_control_qubit_num_list();
+    for(int i = 0; i < args->num_positive_control_qubits; i++) {
+        index_state_0 |= 1ULL << positive_control_qubit_num_list[i];
+    }
+
+    // generate index_state_1
+    // num_target_qubits == 1
+    auto const target_qubit_num = args->get_target_qubit_num_list()[0];
+    // uint64_t const index_state_1 =
+    index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+
+}
+
+
 struct cn_h {
     static __device__ void apply() {
 
         int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
 
-        // int const target_qubit_num = 1;
-        auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
-
-        uint64_t index_state_0 = 0;
-
-        int const num_operand_qubits = args->get_num_operand_qubits();
-        int const* const qubit_num_list_sorted = args->get_operand_qubit_num_list_sorted();
-
-        // generate index_state_0
-        // ignoring positive control qubits
-        uint64_t lower_mask = 0;
-        for(int i = 0; i < num_operand_qubits; i++) {
-            uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
-            uint64_t const upper_mask = mask & ~lower_mask;
-            lower_mask = mask;
-            index_state_0 |= (thread_num & upper_mask) << i;
-        }
-        index_state_0 |= (thread_num & ~lower_mask) << num_operand_qubits;
-
-        // update index_state_0
-        // considering positive control qubits
-        int const* const positive_control_qubit_num_list = args->get_positive_control_qubit_num_list();
-        for(int i = 0; i < args->num_positive_control_qubits; i++) {
-            index_state_0 |= 1ULL << positive_control_qubit_num_list[i];
-        }
-
-        // generate index_state_1
-        // num_target_qubits == 1
-        auto const target_qubit_num = args->get_target_qubit_num_list()[0];
-        uint64_t const index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+        uint64_t index_state_0, index_state_1;
+        thread_num_to_state_index(thread_num, index_state_0, index_state_1);
 
         qcs::complex_t const amp_state_0 = qcs::kernel_common_constant.state_data_device[index_state_0];
         qcs::complex_t const amp_state_1 = qcs::kernel_common_constant.state_data_device[index_state_1];
@@ -263,42 +271,8 @@ struct cn_x {
 
         int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
 
-        // int const target_qubit_num = 1;
-        auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
-
-        uint64_t index_state_0 = 0;
-
-        int const num_operand_qubits = args->get_num_operand_qubits();
-        int const* const qubit_num_list_sorted = args->get_operand_qubit_num_list_sorted();
-
-        // generate index_state_0
-        // ignoring positive control qubits
-        uint64_t lower_mask = 0;
-        // for(int i = 0; i < num_operand_qubits; i++) {
-        //     uint64_t const lower_mask_next = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
-        //     uint64_t const mask = lower_mask_next & ~lower_mask;
-        //     lower_mask = lower_mask_next;
-        //     index_state_0 |= (thread_num & mask) << i;
-        // }
-        for(int i = 0; i < num_operand_qubits; i++) {
-            uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
-            uint64_t const upper_mask = mask & ~lower_mask;
-            lower_mask = mask;
-            index_state_0 |= (thread_num & upper_mask) << i;
-        }
-        index_state_0 |= ((thread_num & ~lower_mask) << num_operand_qubits);
-
-        // update index_state_0
-        // considering positive control qubits
-        int const* const positive_control_qubit_num_list = args->get_positive_control_qubit_num_list();
-        for(int i = 0; i < args->num_positive_control_qubits; i++) {
-            index_state_0 |= (1ULL << positive_control_qubit_num_list[i]);
-        }
-
-        // generate index_state_1
-        // num_target_qubits == 1
-        auto const target_qubit_num = args->get_target_qubit_num_list()[0];
-        uint64_t const index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+        uint64_t index_state_0, index_state_1;
+        thread_num_to_state_index(thread_num, index_state_0, index_state_1);
 
         qcs::complex_t const amp_state_0 = qcs::kernel_common_constant.state_data_device[index_state_0];
         qcs::complex_t const amp_state_1 = qcs::kernel_common_constant.state_data_device[index_state_1];
@@ -489,7 +463,8 @@ void setup(int num_rand_areas_times_num_procs) {
     }
 
     // num_samples = 64;
-    num_samples = 1ULL << num_qubits;
+    // num_samples = 1ULL << num_qubits;
+    num_samples = 1;
     rng_seed = 12345;
 
     log_num_procs = atlc::log2_int(num_procs);
@@ -999,35 +974,8 @@ struct IndirectLoad
     qcs::complex_t operator()(uint64_t thread_num) const
     {
 #ifdef __CUDA_ARCH__
-        auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
-
-        uint64_t index_state_0 = 0;
-
-        int const num_operand_qubits = args->get_num_operand_qubits();
-        int const* const qubit_num_list_sorted = args->get_operand_qubit_num_list_sorted();
-
-        // generate index_state_0
-        // ignoring positive control qubits
-        uint64_t lower_mask = 0;
-        for(int i = 0; i < num_operand_qubits; i++) {
-            uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
-            uint64_t const upper_mask = mask & ~lower_mask;
-            lower_mask = mask;
-            index_state_0 |= (thread_num & upper_mask) << i;
-        }
-        index_state_0 |= (thread_num & ~lower_mask) << num_operand_qubits;
-
-        // update index_state_0
-        // considering positive control qubits
-        int const* const positive_control_qubit_num_list = args->get_positive_control_qubit_num_list();
-        for(int i = 0; i < args->num_positive_control_qubits; i++) {
-            index_state_0 |= 1ULL << positive_control_qubit_num_list[i];
-        }
-
-        // generate index_state_1
-        // num_target_qubits == 1
-        auto const target_qubit_num = args->get_target_qubit_num_list()[0];
-        uint64_t const index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+        uint64_t index_state_0, index_state_1;
+        thread_num_to_state_index(thread_num, index_state_0, index_state_1);
 
         return {cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]), cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])};
 #else
@@ -1040,7 +988,7 @@ int main(int argc, char** argv) {
 
     flag_calculate_checksum = true;
     use_unified_memory = false;
-    initstate_choice = initstate_enum::use_curand;
+    initstate_choice = initstate_enum::sequential;
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
@@ -1064,6 +1012,8 @@ int main(int argc, char** argv) {
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
+
+#if 0 /* measurement */
 
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu measurement\n");
@@ -1168,9 +1118,9 @@ int main(int argc, char** argv) {
             fprintf(stdout, "%llu\n", measured_bit);
         }
     }
+#endif /* measurement */
 
-
-#if 0
+#if 1 /* hadamar */
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu_hadamard\n");
     }
