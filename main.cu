@@ -371,6 +371,7 @@ int rng_seed;
 
 int log_num_procs;
 int log_block_size_max;
+int block_size_max;
 int target_qubit_num_begin;
 int target_qubit_num_end;
 
@@ -381,7 +382,9 @@ cudaEvent_t event_2;
 uint64_t num_states;
 int num_qubits_local;
 uint64_t num_states_local;
-int block_size_max;
+
+uint64_t num_blocks_gateop;
+uint64_t block_size_gateop;
 
 qcs::complex_t* state_data_device;
 qcs::kernel_common_struct* qcs_kernel_common_constant_addr;
@@ -788,7 +791,7 @@ void check_control_qubit_num_physical() {
     }
 };
 
-void operate_gate() {
+void prepare_operating_gate() {
 
     if (!control_condition) { return; }
 
@@ -842,7 +845,7 @@ void operate_gate() {
 
     uint64_t const log_num_threads = num_qubits_local - num_operand_qubits;
     uint64_t log_block_size_gateop;
-    uint64_t num_blocks_gateop;
+    // uint64_t num_blocks_gateop;
 
     if (log_block_size_max > log_num_threads) {
         log_block_size_gateop = log_num_threads;
@@ -852,11 +855,9 @@ void operate_gate() {
         num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
     }
 
-    uint64_t const block_size_gateop = 1ULL << log_block_size_gateop;
+    // uint64_t const
+    block_size_gateop = 1ULL << log_block_size_gateop;
 
-    // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
-    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
-    // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 }
 
 void save_statevector() {
@@ -1143,7 +1144,11 @@ int main(int argc, char** argv) {
 
             ensure_local_qubits();
             check_control_qubit_num_physical();
-            operate_gate();
+            prepare_operating_gate();
+
+            // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
+            ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
+            // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 
         } /* target_qubit_num_logical loop */
 
