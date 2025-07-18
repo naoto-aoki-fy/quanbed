@@ -120,7 +120,7 @@ struct kernel_input_qnlist_struct {
             + this->num_negative_control_qubits
             + this->num_target_qubits;
     }
-};
+}; /* kernel_input_qnlist_struct */
 
 struct kernel_input_qnp_struct {
     int num_target_qubits;
@@ -205,7 +205,7 @@ struct kernel_input_qnp_struct {
             + this->num_target_qubits;
     }
 
-};
+}; /* kernel_input_qnp_struct */
 
 static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& index_state_0, uint64_t& index_state_1) {
     auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
@@ -238,7 +238,7 @@ static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& 
     auto const target_qubit_num = args->get_target_qubit_num_list()[0];
     index_state_1 = index_state_0 | (1ULL << target_qubit_num);
 
-}
+} /* thread_num_to_state_index */
 
 struct cn_h {
     static __device__ void apply() {
@@ -255,7 +255,7 @@ struct cn_h {
         qcs::kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * M_SQRT1_2;
 
     }
-};
+}; /* cn_h */
 
 __global__ void cuda_gate_cn_h() {
     cn_h::apply();
@@ -276,7 +276,7 @@ struct cn_x {
         qcs::kernel_common_constant.state_data_device[index_state_1] = amp_state_0;
 
     }
-};
+}; /* cn_x */
 
 __global__ void cuda_gate_cn_x() {
     cn_x::apply();
@@ -304,7 +304,7 @@ struct hadamard {
         qcs::kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * M_SQRT1_2;
 
     }
-};
+}; /* hadamard */
 
 struct identity {
     static __device__ void apply() { }
@@ -351,6 +351,8 @@ enum class initstate_enum {
 };
 
 struct simulator {
+
+/* begin simulator variables */
 
 int argc;
 char** argv;
@@ -439,6 +441,8 @@ std::vector<int> positive_control_qubit_num_logical_list;
 std::vector<int> negative_control_qubit_num_logical_list;
 
 bool control_condition;
+
+/* end simulator variables */
 
 simulator(int argc, char** argv) {
     this->argc = argc;
@@ -532,7 +536,7 @@ void setup(int num_rand_areas_times_num_procs) {
 
     ATLC_CHECK_CUDA(cudaMallocAsync, &cub_temp_buffer_device, 1, stream);
     cub_temp_buffer_device_size = 1;
-}
+} /* setup */
 
 void initialize_sequential() {
 
@@ -548,7 +552,7 @@ void initialize_sequential() {
 
     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
 
-}
+} /* initialize_sequential */
 
 void initialize_zero() {
     if (proc_num == 0) {
@@ -586,7 +590,7 @@ void initialize_use_curand() {
             ATLC_CHECK_CURAND(curandDestroyGenerator, rng_device);
         }
     }
-}
+} /* initialize_use_curand */
 
 void initialize_laod_statevector() {
 
@@ -617,7 +621,7 @@ void initialize_laod_statevector() {
     }
 
     ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-}
+} /* initialize_laod_statevector */
 
 void ensure_local_qubits() {
     target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
@@ -728,7 +732,7 @@ void ensure_local_qubits() {
         // target_qubit_num_physical = swap_target_local;
 
     }
-};
+}; /* ensure_local_qubits */
 
 void check_control_qubit_num_physical() {
 
@@ -769,7 +773,7 @@ void check_control_qubit_num_physical() {
             negative_control_qubit_num_physical_local_list.push_back(negative_control_qubit_num_physical);
         }
     }
-};
+}; /* check_control_qubit_num_physical */
 
 void prepare_operating_gate() {
 
@@ -836,7 +840,7 @@ void prepare_operating_gate() {
 
     block_size_gateop = 1ULL << log_block_size_gateop;
 
-}
+} /* prepare_operating_gate */
 
 void save_statevector() {
 
@@ -883,7 +887,7 @@ void save_statevector() {
         }
         MPI_Barrier(MPI_COMM_WORLD);
     }
-}
+} /* save_statevector */
 
 void calculate_checksum() {
 
@@ -945,7 +949,7 @@ void calculate_checksum() {
         MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
     }
 
-}
+} /* calculate_checksum */
 
 int main(int argc, char** argv) {
 
@@ -1134,7 +1138,7 @@ int main(int argc, char** argv) {
 
     return 0;
 
-};
+}; /* main */
 
 void dispose() {
     ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
@@ -1145,8 +1149,9 @@ void dispose() {
     ATLC_CHECK_CUDA(cudaStreamDestroy, stream);
 };
 
-};
-}
+}; /* simulator */
+
+} /* qcs */
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
