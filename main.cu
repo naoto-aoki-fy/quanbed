@@ -23,6 +23,7 @@
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <cuda/std/complex>
+#include <cuda/std/array>
 #include <cub/cub.cuh>
 #include <nccl.h>
 #include <openssl/evp.h>
@@ -41,6 +42,7 @@ namespace qcs {
 
 typedef double float_t;
 typedef cuda::std::complex<qcs::float_t> complex_t;
+typedef cuda::std::array<qcs::float_t, 2> float2_t;
 
 __global__ void initstate_sequential_kernel(qcs::complex_t* const data_global, int proc_num)
 {
@@ -293,7 +295,7 @@ struct hadamard {
         uint64_t const index_state_higher = (thread_num & ~lower_mask) << ((int64_t)1);
 
         uint64_t const index_state_0 = index_state_lower | index_state_higher;
-        uint64_t const index_state_1 = index_state_0 | (((int64_t)1)<<target_qubit_num);
+        uint64_t const index_state_1 = index_state_0 | (((int64_t)1) << target_qubit_num);
 
         qcs::complex_t const amp_state_0 = qcs::kernel_common_constant.state_data_device[index_state_0];
         qcs::complex_t const amp_state_1 = qcs::kernel_common_constant.state_data_device[index_state_1];
@@ -312,6 +314,33 @@ template<class Gate>
 __global__ void cuda_gate() {
     Gate::apply();
 }
+
+namespace cubUtility {
+
+    struct float2Add {
+        __host__ __device__ __forceinline__
+        qcs::float2_t operator()(const qcs::float2_t& a, const qcs::float2_t& b) const {
+            return {a[0] + b[0], a[1] + b[1]};
+        }
+    };
+
+    struct IndirectLoad
+    {
+        __host__ __device__ __forceinline__
+        qcs::float2_t operator()(uint64_t thread_num) const
+        {
+    #ifdef __CUDA_ARCH__
+            uint64_t index_state_0, index_state_1;
+            thread_num_to_state_index(thread_num, index_state_0, index_state_1);
+
+            return qcs::float2_t{cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]), cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])};
+    #else
+            return qcs::float2_t();
+    #endif
+        }
+    };
+
+} /* cubUtility */
 
 enum class initstate_enum {
     sequential,
@@ -384,7 +413,7 @@ std::vector<char> qcs_kernel_input_host_buffer;
 int log_swap_buffer_total_length;
 uint64_t swap_buffer_total_length;
 qcs::complex_t* swap_buffer;
-qcs::complex_t* measure_norm_device;
+qcs::float2_t* measure_norm_device;
 
 void* cub_temp_buffer_device;
 uint64_t cub_temp_buffer_device_size;
@@ -918,22 +947,6 @@ void calculate_checksum() {
 
 }
 
-struct IndirectLoad
-{
-    __host__ __device__ __forceinline__
-    qcs::complex_t operator()(uint64_t thread_num) const
-    {
-#ifdef __CUDA_ARCH__
-        uint64_t index_state_0, index_state_1;
-        thread_num_to_state_index(thread_num, index_state_0, index_state_1);
-
-        return {cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]), cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])};
-#else
-        return 0;
-#endif
-    }
-};
-
 int main(int argc, char** argv) {
 
     flag_calculate_checksum = true;
@@ -990,18 +1003,23 @@ int main(int argc, char** argv) {
             check_control_qubit_num_physical();
             prepare_operating_gate();
 
-            qcs::complex_t measure_norm_host;
+            float2_t measure_norm_host;
 
             if (control_condition) {
-                using CountingIter = cub::CountingInputIterator<uint64_t>;
-                using TransformIter = cub::TransformInputIterator<qcs::complex_t, IndirectLoad, CountingIter>;
 
-                IndirectLoad loader;
+                cubUtility::IndirectLoad loader;
+
+                using CountingIter = cub::CountingInputIterator<uint64_t>;
+                using TransformIter = cub::TransformInputIterator<float2_t, decltype(loader), CountingIter>;
+
                 CountingIter counting(0);
                 TransformIter in_it(counting, loader);
 
                 uint64_t temp_sz_required;
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, NULL, temp_sz_required, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
+
+                cubUtility::float2Add float2AddObj;
+                float2_t zero{};
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, NULL, temp_sz_required, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
 
                 if (cub_temp_buffer_device_size < temp_sz_required) {
                     ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
@@ -1009,24 +1027,24 @@ int main(int argc, char** argv) {
                     cub_temp_buffer_device_size = temp_sz_required;
                 }
 
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, cub_temp_buffer_device, cub_temp_buffer_device_size, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, cub_temp_buffer_device, cub_temp_buffer_device_size, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
 
-                ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+                ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(float2_t), cudaMemcpyDeviceToHost, stream);
 
                 ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
             } else {
-                measure_norm_host = 0;
+                measure_norm_host = {0, 0};
             }
 
 #if 1 /* parallel measurement */
-            qcs::complex_t measure_norm_global;
-            MPI_Allreduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            qcs::float_t measure_norm_global[2];
+            MPI_Allreduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-            qcs::float_t const measure_norm_sum = measure_norm_global.real() + measure_norm_global.imag();
+            qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
 
             std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
             qcs::float_t const random_value = dist1(engine);
-            bool measure_result = measure_norm_global.real() < random_value;
+            bool measure_result = measure_norm_global[0] < random_value;
 
             if (measure_result) { /* 1 */
                 measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
@@ -1035,16 +1053,16 @@ int main(int argc, char** argv) {
                 measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
             }
 #else /* measurement by master */
-            qcs::complex_t measure_norm_global;
-            MPI_Reduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            qcs::float_t measure_norm_global[2];
+            MPI_Reduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
             bool measure_result_0;
             if (proc_num == 0) {
-                qcs::float_t const measure_norm_sum = measure_norm_global.real() + measure_norm_global.imag();
+                qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
 
                 std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
                 qcs::float_t const random_value = dist1(engine);
-                measure_result_0 = measure_norm_global.real() < random_value;
+                measure_result_0 = measure_norm_global[0] < random_value;
             }
             bool measure_result;
             MPI_Scatter(&measure_result_0, 1, MPI_C_BOOL, &measure_result, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
