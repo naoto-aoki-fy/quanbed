@@ -211,7 +211,6 @@ namespace qcs {
 static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& index_state_0, uint64_t& index_state_1) {
     auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
 
-    // uint64_t index_state_0 = 0;
     index_state_0 = 0;
 
     int const num_operand_qubits = args->get_num_operand_qubits();
@@ -238,7 +237,6 @@ static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& 
     // generate index_state_1
     // num_target_qubits == 1
     auto const target_qubit_num = args->get_target_qubit_num_list()[0];
-    // uint64_t const index_state_1 =
     index_state_1 = index_state_0 | (1ULL << target_qubit_num);
 
 }
@@ -284,7 +282,6 @@ struct cn_x {
 };
 
 __global__ void cuda_gate_cn_x() {
-    // printf("kernel: cuda_gate_cn_x\n");
     cn_x::apply();
 }
 
@@ -293,7 +290,6 @@ struct hadamard {
     static __device__ void apply() {
 
         uint64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
-        // qcs_kernel_input_q1_struct* args = (qcs_kernel_input_q1_struct*)(void*)qcs::kernel_input_constant;
         auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
         auto const target_qubit_num = args->get_target_qubit_num_list()[0];
 
@@ -442,9 +438,7 @@ void setup(int num_rand_areas_times_num_procs) {
             "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
             proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
 
-    // gpu_id = proc_num;
     gpu_id = my_node_local_rank;
-    // gpu_id = 0;
     ATLC_CHECK_CUDA(cudaSetDevice, gpu_id);
 
     if (proc_num == 0) {
@@ -466,9 +460,7 @@ void setup(int num_rand_areas_times_num_procs) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    // num_samples = 64;
     num_samples = 1ULL << num_qubits;
-    // num_samples = 1;
     rng_seed = 12345;
 
     log_num_procs = atlc::log2_int(num_procs);
@@ -476,18 +468,12 @@ void setup(int num_rand_areas_times_num_procs) {
     log_block_size_max = 9;
     target_qubit_num_begin = 0;
     target_qubit_num_end = num_qubits;
-    // target_qubit_num_end = 2;
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
 
     ATLC_CHECK_CUDA(cudaStreamCreate, &stream);
-    // ATLC_DEFER_CHECK_CUDA(cudaStreamDestroy, stream);
-
     ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
-    // ATLC_DEFER_CHECK_CUDA(cudaEventDestroy, event_1);
-
     ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
-    // ATLC_DEFER_CHECK_CUDA(cudaEventDestroy, event_2);
 
     num_states = 1ULL << num_qubits;
 
@@ -495,7 +481,6 @@ void setup(int num_rand_areas_times_num_procs) {
 
     num_states_local = 1ULL << num_qubits_local;
     block_size_max = 1 << log_block_size_max;
-    // num_blocks = 1ULL << (num_qubits_local - 1 - log_block_size_max);
 
     if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
@@ -505,7 +490,6 @@ void setup(int num_rand_areas_times_num_procs) {
     } else {
         ATLC_CHECK_CUDA(cudaMallocAsync, &state_data_device, num_states_local * sizeof(*state_data_device), stream);
     }
-    // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, state_data_device, stream);
 
     ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
 
@@ -515,24 +499,14 @@ void setup(int num_rand_areas_times_num_procs) {
 
     ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
 
-    // qcs::kernel_input_qnlist_struct* qcs_kernel_input_host = (qcs::kernel_input_qnlist_struct*)malloc(QCS_KERNEL_INPUT_SIZE);
-    // ATLC_DEFER_FUNC(free, qcs_kernel_input_host);
-
     log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
-    // log_swap_buffer_total_length = num_qubits_local;
     swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
     ATLC_CHECK_CUDA(cudaMallocAsync, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t), stream);
-    // ATLC_CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
-    // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
 
 }
 
 void initialize_sequential() {
-    // std::vector<qcs::complex_t> state_data_host(num_states_local);
-    // for (uint64_t state_num_local = 0; state_num_local < num_states_local; state_num_local++) {
-    //     state_data_host[state_num_local] = state_num_local + proc_num * num_states_local;
-    // }
-    // ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, state_data_host.data(), sizeof(qcs::complex_t) * num_states_local, cudaMemcpyHostToDevice, stream);
+
     uint64_t num_blocks_init;
     uint64_t block_size_init;
     if (num_qubits_local >= log_block_size_max) {
@@ -542,8 +516,6 @@ void initialize_sequential() {
         num_blocks_init = 1;
         block_size_init = num_states_local;
     }
-    // fprintf(stderr, "debug: num_blocks_init=%llu\n", num_blocks_init);
-    // fprintf(stderr, "debug: block_size_init=%llu\n", block_size_init);
 
     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
 
@@ -572,23 +544,10 @@ void initialize_use_curand() {
     if (proc_num == 0) { fprintf(stderr, "[info] generating random state\n"); }
     curandGenerator_t rng_device;
 
-    // ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-    // ATLC_CHECK_CURAND(curandSetStream, rng_device, stream);
-    // ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
-
     ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
 
-    // if (false) {
-    //     ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
-    //     ATLC_CHECK_CURAND(curandSetStream, rng_device, stream);
-    //     ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num);
-    //     ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local * 2 /* complex */, 0.0, 1.0);
-    //     ATLC_CHECK_CURAND(curandDestroyGenerator, rng_device);
-    // } else
     {
-        // int const num_rand_areas = 4;
         int const log_num_rand_areas = atlc::log2_int(num_rand_areas);
-        // if (log_num_rand_areas!=1) { throw; }
         uint64_t const num_states_rand_area = num_states_local >> log_num_rand_areas;
         for (int rand_area_num = 0; rand_area_num < num_rand_areas; rand_area_num++) {
             ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device, CURAND_RNG_PSEUDO_DEFAULT);
@@ -598,16 +557,6 @@ void initialize_use_curand() {
             ATLC_CHECK_CURAND(curandDestroyGenerator, rng_device);
         }
     }
-    // ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device, rng_seed + proc_num * 2);
-    // ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device, (qcs::float_t*)(void*)state_data_device, num_states_local, 0.0, 1.0);
-
-    // curandGenerator_t rng_device_2;
-
-    // ATLC_CHECK_CURAND(curandCreateGenerator, &rng_device_2, CURAND_RNG_PSEUDO_DEFAULT);
-    // ATLC_CHECK_CURAND(curandSetStream, rng_device_2, stream);
-    // ATLC_CHECK_CURAND(curandSetPseudoRandomGeneratorSeed, rng_device_2, rng_seed + proc_num * 2 + 1);
-
-    // ATLC_CHECK_CURAND(curandGenerateNormalDouble, rng_device_2, &((qcs::float_t*)(void*)state_data_device)[num_states_local], num_states_local, 0.0, 1.0);
 }
 
 void initialize_laod_statevector() {
@@ -645,7 +594,6 @@ void ensure_local_qubits() {
     target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
     for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
         target_qubit_num_physical_list[tqni] = perm_l2p[target_qubit_num_logical_list[tqni]];
-        // fprintf(stderr, "[debug] target_qubit_num_physical_list[tqni]=%d tqni=%d\n", target_qubit_num_physical_list[tqni], tqni);
     }
 
     swap_target_global_list.resize(0);
@@ -657,7 +605,6 @@ void ensure_local_qubits() {
             int const swap_target_local = num_qubits_local - swap_target_global_list.size();
             swap_target_local_list.push_back(swap_target_local);
             target_qubit_num_physical_list[tqni] = swap_target_local;
-            // fprintf(stderr, "[debug] target_qubit_num_physical=%d swap_target_local=%d\n", tqn_i, swap_target_local);
         }
     }
     int const num_swap_qubits = swap_target_global_list.size();
@@ -771,10 +718,8 @@ void check_control_qubit_num_physical() {
             if (!(1 & (proc_num >> (positive_control_qubit_num_physical - num_qubits_local))) /* 0 */ ) {
                 control_condition = false;
             }
-            // fprintf(stderr, "debug: proc_num=%d ctrl(global)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
         } else {
             positive_control_qubit_num_physical_local_list.push_back(positive_control_qubit_num_physical);
-            // fprintf(stderr, "debug: proc_num=%d ctrl(local)=%d\n", proc_num, positive_control_qubit_num_logical_list[cqni]);
         }
 
     }
@@ -791,10 +736,8 @@ void check_control_qubit_num_physical() {
             if (1 & (proc_num >> (negative_control_qubit_num_physical - num_qubits_local)) /* 1 */ ) {
                 control_condition = false;
             }
-            // fprintf(stderr, "debug: proc_num=%d negctrl(global)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
         } else {
             negative_control_qubit_num_physical_local_list.push_back(negative_control_qubit_num_physical);
-            // fprintf(stderr, "debug: proc_num=%d negctrl(local)=%d\n", proc_num, negative_control_qubit_num_logical_list[cqni]);
         }
     }
 };
@@ -853,7 +796,6 @@ void prepare_operating_gate() {
 
     uint64_t const log_num_threads = num_qubits_local - num_operand_qubits;
     uint64_t log_block_size_gateop;
-    // uint64_t num_blocks_gateop;
 
     if (log_block_size_max > log_num_threads) {
         log_block_size_gateop = log_num_threads;
@@ -863,7 +805,6 @@ void prepare_operating_gate() {
         num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
     }
 
-    // uint64_t const
     block_size_gateop = 1ULL << log_block_size_gateop;
 
 }
@@ -1031,9 +972,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[info] gpu measurement\n");
     }
 
-    // std::random_device seed_gen;
-    // auto const seed = seed_gen();
-    std::mt19937 engine(rng_seed);
+    std::mt19937 engine(rng_seed + 1);
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
@@ -1101,7 +1040,6 @@ int main(int argc, char** argv) {
 #else /* measurement by master */
             qcs::complex_t measure_norm_global;
             MPI_Reduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-            // MPI_Allreduce((qcs::float_t*)&measure_norm_host, (qcs::float_t*)&measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
             bool measure_result_0;
             if (proc_num == 0) {
@@ -1121,11 +1059,6 @@ int main(int argc, char** argv) {
                 measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
             }
 #endif
-
-            // if (proc_num == 0) {
-            //     fprintf(stderr, "[debug] qubit[%d]=%d\n", measure_qubit_num_logical, (int)measure_result);
-            // }
-
         }
 
         if (proc_num == 0) {
@@ -1159,9 +1092,7 @@ int main(int argc, char** argv) {
             check_control_qubit_num_physical();
             prepare_operating_gate();
 
-            // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
             ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_x, num_blocks_gateop, block_size_gateop, 0, stream);
-            // cuda_gate<hadamard><<<num_blocks_gateop, block_size, 0, stream>>>();
 
         } /* target_qubit_num_logical loop */
 
