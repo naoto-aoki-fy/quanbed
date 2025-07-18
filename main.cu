@@ -282,39 +282,6 @@ __global__ void cuda_gate_cn_x() {
     cn_x::apply();
 }
 
-struct hadamard {
-    static __device__ void apply() {
-
-        uint64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
-        auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
-        auto const target_qubit_num = args->get_target_qubit_num_list()[0];
-
-        uint64_t const lower_mask = (1ULL << target_qubit_num) - 1ULL;
-
-        uint64_t const index_state_lower = thread_num & lower_mask;
-        uint64_t const index_state_higher = (thread_num & ~lower_mask) << ((int64_t)1);
-
-        uint64_t const index_state_0 = index_state_lower | index_state_higher;
-        uint64_t const index_state_1 = index_state_0 | (((int64_t)1) << target_qubit_num);
-
-        qcs::complex_t const amp_state_0 = qcs::kernel_common_constant.state_data_device[index_state_0];
-        qcs::complex_t const amp_state_1 = qcs::kernel_common_constant.state_data_device[index_state_1];
-
-        qcs::kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * M_SQRT1_2;
-        qcs::kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * M_SQRT1_2;
-
-    }
-}; /* hadamard */
-
-struct identity {
-    static __device__ void apply() { }
-};
-
-template<class Gate>
-__global__ void cuda_gate() {
-    Gate::apply();
-}
-
 namespace cubUtility {
 
     struct float2Add {
