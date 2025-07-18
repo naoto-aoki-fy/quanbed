@@ -392,6 +392,10 @@ std::vector<char> qcs_kernel_input_host_buffer;
 int log_swap_buffer_total_length;
 uint64_t swap_buffer_total_length;
 qcs::complex_t* swap_buffer;
+qcs::complex_t* measure_norm_device;
+
+void* d_temp;
+uint64_t temp_sz;
 
 std::vector<int> operand_qubit_num_list;
 std::vector<int> target_qubit_num_physical_list;
@@ -503,6 +507,10 @@ void setup(int num_rand_areas_times_num_procs) {
     swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
     ATLC_CHECK_CUDA(cudaMallocAsync, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t), stream);
 
+    ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
+
+    ATLC_CHECK_CUDA(cudaMallocAsync, &d_temp, 1, stream);
+    temp_sz = 1;
 }
 
 void initialize_sequential() {
@@ -938,7 +946,7 @@ int main(int argc, char** argv) {
 
     flag_calculate_checksum = true;
     use_unified_memory = false;
-    initstate_choice = initstate_enum::entangled;
+    initstate_choice = initstate_enum::use_curand;
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
@@ -1000,19 +1008,16 @@ int main(int argc, char** argv) {
                 CountingIter counting(0);
                 TransformIter in_it(counting, loader);
 
-                qcs::complex_t* measure_norm_device;
-                ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
+                uint64_t temp_sz_required;
+                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, NULL, temp_sz_required, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
 
-                size_t temp_sz = 0;
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, NULL, temp_sz, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
-
-                void* d_temp;
-                ATLC_CHECK_CUDA(cudaMallocAsync, &d_temp, temp_sz, stream);
+                if (temp_sz < temp_sz_required) {
+                    ATLC_CHECK_CUDA(cudaFreeAsync, d_temp, stream);
+                    ATLC_CHECK_CUDA(cudaMallocAsync, &d_temp, temp_sz_required, stream);
+                    temp_sz = temp_sz_required;
+                }
 
                 ATLC_CHECK_CUDA(cub::DeviceReduce::Sum, d_temp, temp_sz, in_it, measure_norm_device, num_states_local >> num_operand_qubits, stream);
-
-                ATLC_CHECK_CUDA(cudaFreeAsync, d_temp, stream);
-
 
                 ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
 
@@ -1122,6 +1127,7 @@ int main(int argc, char** argv) {
 };
 
 void dispose() {
+    ATLC_CHECK_CUDA(cudaFreeAsync, d_temp, stream);
     ATLC_CHECK_CUDA(cudaFreeAsync, state_data_device, stream);
     ATLC_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
     ATLC_CHECK_CUDA(cudaEventDestroy, event_1);
