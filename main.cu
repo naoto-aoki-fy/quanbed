@@ -396,7 +396,6 @@ std::vector<char> qcs_kernel_input_host_buffer;
 int log_swap_buffer_total_length;
 uint64_t swap_buffer_total_length;
 qcs::complex_t* swap_buffer;
-qcs::float_t* norm_sum_device;
 
 std::vector<int> operand_qubit_num_list;
 std::vector<int> target_qubit_num_physical_list;
@@ -525,9 +524,6 @@ void setup(int num_rand_areas_times_num_procs) {
     ATLC_CHECK_CUDA(cudaMallocAsync, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t), stream);
     // ATLC_CHECK_CUDA(cudaMallocManaged, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t));
     // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
-
-    ATLC_CHECK_CUDA(cudaMallocAsync, &norm_sum_device, (num_states_local>>log_block_size_max) * sizeof(qcs::float_t), stream);
-    // ATLC_DEFER_CHECK_CUDA(cudaFreeAsync, norm_sum_device, stream);
 
 }
 
