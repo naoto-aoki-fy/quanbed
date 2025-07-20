@@ -36,13 +36,13 @@
 #include <atlc/check_curand.hpp>
 #include <atlc/check_nccl.hpp>
 
-#define QCS_KERNEL_INPUT_MAX_SIZE 256
-
 namespace qcs {
 
 typedef double float_t;
 typedef cuda::std::complex<qcs::float_t> complex_t;
 typedef cuda::std::array<qcs::float_t, 2> float2_t;
+
+constexpr int const kernel_input_max_size = 256;
 
 __global__ void initstate_sequential_kernel(qcs::complex_t* const data_global, int proc_num)
 {
@@ -58,7 +58,7 @@ struct kernel_common_struct {
 
 __constant__ qcs::kernel_common_struct kernel_common_constant;
 
-__constant__ unsigned char kernel_input_constant[QCS_KERNEL_INPUT_MAX_SIZE];
+__constant__ unsigned char kernel_input_constant[qcs::kernel_input_max_size];
 
 struct kernel_input_qnlist_struct {
     int num_target_qubits;
@@ -723,9 +723,9 @@ void prepare_operating_gate() {
         negative_control_qubit_num_physical_list.size(),
         target_qubit_num_physical_list.size()
     );
-    if (qkiqn_size > QCS_KERNEL_INPUT_MAX_SIZE) {
+    if (qkiqn_size > qcs::kernel_input_max_size) {
         std::vector<char> runtime_error_message(256);
-        sprintf(runtime_error_message.data(), "qkiqn_size(%llu) > QCS_KERNEL_INPUT_MAX_SIZE(%llu)", qkiqn_size, QCS_KERNEL_INPUT_MAX_SIZE);
+        sprintf(runtime_error_message.data(), "qkiqn_size(%llu) > qcs::kernel_input_max_size(%llu)", qkiqn_size, qcs::kernel_input_max_size);
         throw std::runtime_error(runtime_error_message.data());
     }
     qcs_kernel_input_host_buffer.resize(qkiqn_size);
