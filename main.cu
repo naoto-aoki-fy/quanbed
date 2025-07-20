@@ -64,7 +64,7 @@ struct kernel_input_qnlist_struct {
     int num_target_qubits;
     int num_positive_control_qubits;
     int num_negative_control_qubits;
-    int qubit_num_list[0];
+    int qubit_num_list[1];
 
     static __host__ __device__ uint64_t needed_size(
         int const num_positive_control_qubits,
@@ -73,6 +73,7 @@ struct kernel_input_qnlist_struct {
     ) {
         return
             sizeof(qcs::kernel_input_qnlist_struct)
+            - sizeof(qubit_num_list)
             + sizeof(int) * (
                 2 * num_positive_control_qubits
                 + num_negative_control_qubits
@@ -121,91 +122,6 @@ struct kernel_input_qnlist_struct {
             + this->num_target_qubits;
     }
 }; /* kernel_input_qnlist_struct */
-
-struct kernel_input_qnp_struct {
-    int num_target_qubits;
-    int num_positive_control_qubits;
-    int num_negative_control_qubits;
-    int sizeof_param;
-    char data[0];
-
-    static __host__ __device__ uint64_t needed_size(
-        int const num_positive_control_qubits,
-        int const num_negative_control_qubits,
-        int const num_target_qubits,
-        int const sizeof_param
-    ) {
-        return
-            sizeof(qcs::kernel_input_qnlist_struct)
-            + sizeof(int) * (
-                2 * num_positive_control_qubits
-                + num_negative_control_qubits
-                + 2 * num_target_qubits
-            )
-            + sizeof_param;
-    }
-
-    __host__ __device__ void const* get_parameter_pointer() const {
-        return (void const*)data;
-    }
-
-    __host__ __device__ void* get_parameter_pointer() {
-        return (void*)data;
-    }
-
-    template<typename ParamType>
-    __host__ __device__ ParamType const& get_parameter_reference() const {
-        return *(ParamType const*)(void const*)data;
-    }
-
-    template<typename ParamType>
-    __host__ __device__ ParamType& get_parameter_reference() {
-        return *(ParamType*)(void*)data;
-    }
-
-
-    __host__ __device__ uint64_t byte_size() const {
-        return needed_size(this->num_positive_control_qubits, this->num_negative_control_qubits, this->num_target_qubits, this->sizeof_param);
-    }
-
-    __host__ __device__ int get_num_operand_qubits() const {
-        return
-            this->num_positive_control_qubits 
-            + this->num_negative_control_qubits
-            + this->num_target_qubits;
-    }
-
-    __host__ __device__ int const* get_operand_qubit_num_list_sorted() const {
-        return (int const*)(void*)(data + sizeof_param);
-    }
-
-    __host__ __device__ int* get_operand_qubit_num_list_sorted() {
-        return (int*)(void*)(data + sizeof_param);
-    }
-
-    __host__ __device__ int const* get_positive_control_qubit_num_list() const {
-        return (int const*)(void*)(data + sizeof_param) + this->get_num_operand_qubits();
-    }
-
-    __host__ __device__ int* get_positive_control_qubit_num_list() {
-        return (int*)(void*)(data + sizeof_param) + this->get_num_operand_qubits();
-    }
-
-    __host__ __device__ int const* get_target_qubit_num_list() const {
-        return (int const*)(void*)(data + sizeof_param)
-            + 2 * this->num_positive_control_qubits
-            + this->num_negative_control_qubits
-            + this->num_target_qubits;
-    }
-
-    __host__ __device__ int* get_target_qubit_num_list() {
-        return (int*)(void*)(data + sizeof_param) +
-            2 * this->num_positive_control_qubits
-            + this->num_negative_control_qubits
-            + this->num_target_qubits;
-    }
-
-}; /* kernel_input_qnp_struct */
 
 static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& index_state_0, uint64_t& index_state_1) {
     auto args = (qcs::kernel_input_qnlist_struct const*)(void*)qcs::kernel_input_constant;
