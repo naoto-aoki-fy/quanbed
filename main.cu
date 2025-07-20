@@ -273,6 +273,7 @@ std::vector<int> perm_l2p;
 
 int num_samples;
 int rng_seed;
+std::mt19937 engine;
 
 int log_num_procs;
 int log_block_size_max;
@@ -870,6 +871,90 @@ void calculate_checksum() {
 
 } /* calculate_checksum */
 
+int measure_qubit(int const measure_qubit_num_logical) {
+    target_qubit_num_logical_list = {measure_qubit_num_logical};
+    positive_control_qubit_num_logical_list = measured_1_qubit_num_logical_list;
+    negative_control_qubit_num_logical_list = measured_0_qubit_num_logical_list;
+
+    ensure_local_qubits();
+    check_control_qubit_num_physical();
+    prepare_operating_gate();
+
+    float2_t measure_norm_host;
+
+    if (control_condition) {
+
+        cubUtility::IndirectLoad loader;
+
+        using CountingIter = cub::CountingInputIterator<uint64_t>;
+        using TransformIter = cub::TransformInputIterator<float2_t, decltype(loader), CountingIter>;
+
+        CountingIter counting(0);
+        TransformIter in_it(counting, loader);
+
+        uint64_t temp_sz_required;
+
+        cubUtility::float2Add float2AddObj;
+        float2_t zero{};
+        ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, NULL, temp_sz_required, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
+
+        if (cub_temp_buffer_device_size < temp_sz_required) {
+            ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
+            ATLC_CHECK_CUDA(cudaMallocAsync, &cub_temp_buffer_device, temp_sz_required, stream);
+            cub_temp_buffer_device_size = temp_sz_required;
+        }
+
+        ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, cub_temp_buffer_device, cub_temp_buffer_device_size, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
+
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(float2_t), cudaMemcpyDeviceToHost, stream);
+
+        ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
+    } else {
+        measure_norm_host = {0, 0};
+    }
+
+#if 1 /* parallel measurement */
+    qcs::float_t measure_norm_global[2];
+    MPI_Allreduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
+
+    std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
+    qcs::float_t const random_value = dist1(engine);
+    bool measure_result = measure_norm_global[0] < random_value;
+
+    if (measure_result) { /* 1 */
+        measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+        // measured_bit |= 1ULL << measure_qubit_num_logical;
+    } else { /* 0 */
+        measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+    }
+#else /* measurement by master */
+    qcs::float_t measure_norm_global[2];
+    MPI_Reduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    bool measure_result_0;
+    if (proc_num == 0) {
+        qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
+
+        std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
+        qcs::float_t const random_value = dist1(engine);
+        measure_result_0 = measure_norm_global[0] < random_value;
+    }
+    bool measure_result;
+    MPI_Scatter(&measure_result_0, 1, MPI_C_BOOL, &measure_result, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+
+    if (measure_result) { /* 1 */
+        measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+        // measured_bit |= 1ULL << measure_qubit_num_logical;
+    } else { /* 0 */
+        measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+    }
+#endif
+
+    return measure_result;
+}
+
 int main(int argc, char** argv) {
 
     flag_calculate_checksum = true;
@@ -908,7 +993,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[info] gpu measurement\n");
     }
 
-    std::mt19937 engine(rng_seed + 1);
+    engine = std::mt19937(rng_seed + 1);
 
     for(int sample_num=0; sample_num < num_samples; ++sample_num) {
 
@@ -917,86 +1002,10 @@ int main(int argc, char** argv) {
         uint64_t measured_bit = 0;
 
         for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
-
-            target_qubit_num_logical_list = {measure_qubit_num_logical};
-            positive_control_qubit_num_logical_list = measured_1_qubit_num_logical_list;
-            negative_control_qubit_num_logical_list = measured_0_qubit_num_logical_list;
-
-            ensure_local_qubits();
-            check_control_qubit_num_physical();
-            prepare_operating_gate();
-
-            float2_t measure_norm_host;
-
-            if (control_condition) {
-
-                cubUtility::IndirectLoad loader;
-
-                using CountingIter = cub::CountingInputIterator<uint64_t>;
-                using TransformIter = cub::TransformInputIterator<float2_t, decltype(loader), CountingIter>;
-
-                CountingIter counting(0);
-                TransformIter in_it(counting, loader);
-
-                uint64_t temp_sz_required;
-
-                cubUtility::float2Add float2AddObj;
-                float2_t zero{};
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, NULL, temp_sz_required, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
-
-                if (cub_temp_buffer_device_size < temp_sz_required) {
-                    ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
-                    ATLC_CHECK_CUDA(cudaMallocAsync, &cub_temp_buffer_device, temp_sz_required, stream);
-                    cub_temp_buffer_device_size = temp_sz_required;
-                }
-
-                ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, cub_temp_buffer_device, cub_temp_buffer_device_size, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
-
-                ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(float2_t), cudaMemcpyDeviceToHost, stream);
-
-                ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-            } else {
-                measure_norm_host = {0, 0};
-            }
-
-#if 1 /* parallel measurement */
-            qcs::float_t measure_norm_global[2];
-            MPI_Allreduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-            qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
-
-            std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
-            qcs::float_t const random_value = dist1(engine);
-            bool measure_result = measure_norm_global[0] < random_value;
-
-            if (measure_result) { /* 1 */
-                measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
+            int const measured_value = measure_qubit(measure_qubit_num_logical);
+            if (measured_value) {
                 measured_bit |= 1ULL << measure_qubit_num_logical;
-            } else { /* 0 */
-                measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
             }
-#else /* measurement by master */
-            qcs::float_t measure_norm_global[2];
-            MPI_Reduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-
-            bool measure_result_0;
-            if (proc_num == 0) {
-                qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
-
-                std::uniform_real_distribution<qcs::float_t> dist1(0, measure_norm_sum);
-                qcs::float_t const random_value = dist1(engine);
-                measure_result_0 = measure_norm_global[0] < random_value;
-            }
-            bool measure_result;
-            MPI_Scatter(&measure_result_0, 1, MPI_C_BOOL, &measure_result, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
-
-            if (measure_result) { /* 1 */
-                measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
-                measured_bit |= 1ULL << measure_qubit_num_logical;
-            } else { /* 0 */
-                measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
-            }
-#endif
         }
 
         if (proc_num == 0) {
