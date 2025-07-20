@@ -1222,6 +1222,6 @@ void dispose() {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
-    qcs::simulator simulator();
+    qcs::simulator simulator;
     return simulator.main(argc, argv);
 }
