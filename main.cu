@@ -64,6 +64,8 @@ struct kernel_input_qnlist_struct {
     int num_target_qubits;
     int num_positive_control_qubits;
     int num_negative_control_qubits;
+    uint64_t is_measured_bits;
+    uint64_t measured_value_bits;
     int qubit_num_list[1];
 
     static __host__ __device__ uint64_t needed_size(
@@ -685,8 +687,42 @@ void prepare_operating_gate() {
     }
 
     auto target_qubit_num_list_kernel_arg = qcs_kernel_input_host->get_target_qubit_num_list();
+    qcs_kernel_input_host->is_measured_bits = 0;
+    qcs_kernel_input_host->measured_value_bits = 0;
+
     for (int tqi = 0; tqi < target_qubit_num_physical_list.size(); tqi++) {
-        target_qubit_num_list_kernel_arg[tqi] = target_qubit_num_physical_list[tqi];
+        auto const tqn_phys = target_qubit_num_physical_list[tqi];
+        target_qubit_num_list_kernel_arg[tqi] = tqn_phys;
+
+        bool is_measured = false;
+        int measured_value = 0;
+
+        for(int m0qnl_idx = 0; m0qnl_idx < measured_0_qubit_num_logical_list.size(); m0qnl_idx++) {
+            auto const m0qn_phys = perm_l2p[measured_0_qubit_num_logical_list[m0qnl_idx]];
+            if (m0qn_phys == tqn_phys) {
+                is_measured = true;
+                // measured_value = 0;
+                break;
+            }
+        }
+
+        if(!is_measured)
+        for(int m1qnl_idx = 0; m1qnl_idx < measured_1_qubit_num_logical_list.size(); m1qnl_idx++) {
+            auto const m1qn_phys = perm_l2p[measured_1_qubit_num_logical_list[m1qnl_idx]];
+            if (m1qn_phys == tqn_phys) {
+                is_measured = true;
+                measured_value = 1;
+                break;
+            }
+        }
+
+        if (is_measured) {
+            qcs_kernel_input_host->is_measured_bits |= 1ULL << tqi;
+            if (measured_value /* == 1 */) {
+                qcs_kernel_input_host->measured_value_bits |= 1ULL << tqi;
+            }
+        }
+
     }
 
     num_operand_qubits =
