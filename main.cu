@@ -384,10 +384,7 @@ bool control_condition;
 
 /* end simulator variables */
 
-simulator(int argc, char** argv) {
-    this->argc = argc;
-    this->argv = argv;
-}
+simulator() {}
 
 void setup(int num_rand_areas_times_num_procs) {
 
@@ -1225,6 +1222,6 @@ void dispose() {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
-    qcs::simulator simulator(argc, argv);
+    qcs::simulator simulator();
     return simulator.main(argc, argv);
 }
