@@ -1068,9 +1068,6 @@ int main(int argc, char** argv) {
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
-        // measured_0_qubit_num_logical_list.clear();
-        // measured_1_qubit_num_logical_list.clear();
-
         if (false) { /* begin measurement */
             uint64_t measured_bit = 0;
 
@@ -1100,58 +1097,41 @@ int main(int argc, char** argv) {
                     positive_control_qubit_num_logical_list = {};
                     negative_control_qubit_num_logical_list = {};
 
-                    // if target is already measured (0)
-                    measured_0_qubit_num_logical_list_copy.clear();
-                    for (int m0qnl_idx = 0; m0qnl_idx < measured_0_qubit_num_logical_list.size(); m0qnl_idx++) {
-                        auto const m0qn = measured_0_qubit_num_logical_list[m0qnl_idx];
-                        bool is_target = false;
-                        for (int tqn_idx = 0; tqn_idx < target_qubit_num_logical_list.size(); tqn_idx++) {
-                            auto const tqn = target_qubit_num_logical_list[tqn_idx];
-                            if (m0qn == tqn) {
-                                is_target = true;
-                                break;
+                    auto prepare_control_qubit_num_list_func = [&] (std::vector<int>& measured_X_qubit_num_logical_list, std::vector<int>& measured_X_qubit_num_logical_list_copy, std::vector<int>& X_control_qubit_num_logical_list) {
+                        measured_X_qubit_num_logical_list_copy.clear();
+                        for (int mXqnl_idx = 0; mXqnl_idx < measured_X_qubit_num_logical_list.size(); mXqnl_idx++) {
+                            auto const mXqn = measured_X_qubit_num_logical_list[mXqnl_idx];
+                            bool is_target = false;
+                            for (int tqn_idx = 0; tqn_idx < target_qubit_num_logical_list.size(); tqn_idx++) {
+                                auto const tqn = target_qubit_num_logical_list[tqn_idx];
+                                if (mXqn == tqn) {
+                                    is_target = true;
+                                    break;
+                                }
+                            }
+                            if (!is_target) {
+                                measured_X_qubit_num_logical_list_copy.push_back(mXqn);
+                                X_control_qubit_num_logical_list.push_back(mXqn);
                             }
                         }
-                        if (!is_target) {
-                            measured_0_qubit_num_logical_list_copy.push_back(m0qn);
-                            negative_control_qubit_num_logical_list.push_back(m0qn);
-                        }
-                    }
+                    };
+
+                    // if target is already measured (0)
+                    prepare_control_qubit_num_list_func(measured_0_qubit_num_logical_list, measured_0_qubit_num_logical_list_copy, negative_control_qubit_num_logical_list);
 
                     // if target is already measured (1)
-                    measured_1_qubit_num_logical_list_copy.clear();
-                    for (int m1qnl_idx = 0; m1qnl_idx < measured_1_qubit_num_logical_list.size(); m1qnl_idx++) {
-                        auto const m1qn = measured_1_qubit_num_logical_list[m1qnl_idx];
-                        bool is_target = false;
-                        for (int tqn_idx = 0; tqn_idx < target_qubit_num_logical_list.size(); tqn_idx++) {
-                            auto const tqn = target_qubit_num_logical_list[tqn_idx];
-                            if (m1qn == tqn) {
-                                is_target = true;
-                                break;
-                            }
-                        }
-                        if (!is_target) {
-                            positive_control_qubit_num_logical_list.push_back(m1qn);
-                            measured_1_qubit_num_logical_list_copy.push_back(m1qn);
-                        }
-                    }
+                    prepare_control_qubit_num_list_func(measured_1_qubit_num_logical_list, measured_1_qubit_num_logical_list_copy, positive_control_qubit_num_logical_list);
 
                     ensure_local_qubits();
                     check_control_qubit_num_physical();
                     prepare_operating_gate();
 
                     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_h, num_blocks_gateop, block_size_gateop, 0, stream);
-                    // ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_id, num_blocks_gateop, block_size_gateop, 0, stream);
 
                     measured_0_qubit_num_logical_list = measured_0_qubit_num_logical_list_copy;
                     measured_1_qubit_num_logical_list = measured_1_qubit_num_logical_list_copy;
 
                 } /* target_qubit_num_logical loop */
-
-                // if (proc_num==0) {
-                //     fprintf(stderr, "measured_0_qubit_num_logical_list.size()=%llu\n", measured_0_qubit_num_logical_list.size());
-                //     fprintf(stderr, "measured_1_qubit_num_logical_list.size()=%llu\n", measured_1_qubit_num_logical_list.size());
-                // }
 
                 ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
 
@@ -1171,24 +1151,12 @@ int main(int argc, char** argv) {
 
                 for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
                     int const measured_value = measure_qubit(measure_qubit_num_logical);
-                    // fprintf(stderr, "[debug] q%llu measured_value=%llu\n", measure_qubit_num_logical, measured_value);
                     if (measured_value) {
                         measured_bit |= 1ULL << measure_qubit_num_logical;
                     }
-
-                    // if (proc_num==0) {
-                    //     fprintf(stderr, "measured_0_qubit_num_logical_list.size()=%llu\n", measured_0_qubit_num_logical_list.size());
-                    //     fprintf(stderr, "measured_1_qubit_num_logical_list.size()=%llu\n", measured_1_qubit_num_logical_list.size());
-                    // }
                 }
 
-                // if (proc_num==0) {
-                //     fprintf(stderr, "measured_0_qubit_num_logical_list.size()=%llu\n", measured_0_qubit_num_logical_list.size());
-                //     fprintf(stderr, "measured_1_qubit_num_logical_list.size()=%llu\n", measured_1_qubit_num_logical_list.size());
-                // }
-
                 if (proc_num == 0) {
-                    // fprintf(stderr, "[debug] measured = %llu\n", measured_bit);
                     fprintf(stdout, "%llu\n", measured_bit);
                 }
 
