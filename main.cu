@@ -188,8 +188,9 @@ struct cn_h {
     }
 }; /* cn_h */
 
-__global__ void cuda_gate_cn_h() {
-    cn_h::apply();
+template<typename GateType>
+__global__ void cuda_gate() {
+    GateType::apply();
 }
 
 struct cn_id {
@@ -213,9 +214,6 @@ struct cn_id {
     }
 }; /* cn_h */
 
-__global__ void cuda_gate_cn_id() {
-    cn_id::apply();
-}
 
 struct cn_x {
     static __device__ void apply() {
@@ -234,10 +232,6 @@ struct cn_x {
 
     }
 }; /* cn_x */
-
-__global__ void cuda_gate_cn_x() {
-    cn_x::apply();
-}
 
 namespace cubUtility {
 
@@ -431,8 +425,6 @@ void setup(int num_rand_areas_times_num_procs) {
     log_num_procs = atlc::log2_int(num_procs);
 
     log_block_size_max = 9;
-    target_qubit_num_begin = 0;
-    target_qubit_num_end = num_qubits;
 
     if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
 
@@ -1060,6 +1052,20 @@ int measure_qubit(int const measure_qubit_num_logical) {
     return measure_result;
 }
 
+template<typename GateType>
+void operate_gate() {
+
+    prepare_control_qubit_num_list();
+    ensure_local_qubits();
+    check_control_qubit_num_physical();
+    prepare_operating_gate();
+
+    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate<GateType>, num_blocks_gateop, block_size_gateop, 0, stream);
+
+    update_measured_list();
+
+}
+
 int main(int argc, char** argv) {
 
     flag_calculate_checksum = true;
@@ -1127,20 +1133,13 @@ int main(int argc, char** argv) {
 
                 ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
 
-                for(int target_qubit_num_logical = target_qubit_num_begin; target_qubit_num_logical < target_qubit_num_end; target_qubit_num_logical++)
+                for(int target_qubit_num_logical = 0; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
                 {
                     target_qubit_num_logical_list = {target_qubit_num_logical};
                     positive_control_qubit_num_logical_list = {};
                     negative_control_qubit_num_logical_list = {};
 
-                    prepare_control_qubit_num_list();
-                    ensure_local_qubits();
-                    check_control_qubit_num_physical();
-                    prepare_operating_gate();
-
-                    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_h, num_blocks_gateop, block_size_gateop, 0, stream);
-
-                    update_measured_list();
+                    operate_gate<cn_h>();
 
                 } /* target_qubit_num_logical loop */
 
