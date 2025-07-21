@@ -822,10 +822,6 @@ void prepare_operating_gate() {
         + negative_control_qubit_num_physical_local_list.size()
         + target_qubit_num_physical_list.size();
 
-    // if(proc_num==0) {
-    //     fprintf(stderr, "[debug] num_operand_qubits=%llu\n", num_operand_qubits);
-    // }
-
     /* get sorted operand qubits */
     operand_qubit_num_list.clear();
     operand_qubit_num_list.insert(operand_qubit_num_list.end(), positive_control_qubit_num_physical_local_list.begin(), positive_control_qubit_num_physical_local_list.end());
@@ -856,6 +852,11 @@ void prepare_operating_gate() {
     block_size_gateop = 1ULL << log_block_size_gateop;
 
 } /* prepare_operating_gate */
+
+void update_measured_list() {
+    measured_0_qubit_num_logical_list = measured_0_qubit_num_logical_list_copy;
+    measured_1_qubit_num_logical_list = measured_1_qubit_num_logical_list_copy;
+}
 
 void save_statevector() {
 
@@ -1143,8 +1144,7 @@ int main(int argc, char** argv) {
 
                     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate_cn_h, num_blocks_gateop, block_size_gateop, 0, stream);
 
-                    measured_0_qubit_num_logical_list = measured_0_qubit_num_logical_list_copy;
-                    measured_1_qubit_num_logical_list = measured_1_qubit_num_logical_list_copy;
+                    update_measured_list();
 
                 } /* target_qubit_num_logical loop */
 
