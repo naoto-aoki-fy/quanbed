@@ -417,7 +417,6 @@ void setup(int num_rand_areas_times_num_procs) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    num_samples = 1ULL << num_qubits;
     rng_seed = 1;
     // std::random_device rng;
     // rng_seed = rng();
@@ -1108,10 +1107,52 @@ int main(int argc, char** argv) {
     measured_0_qubit_num_logical_list.clear();
     measured_1_qubit_num_logical_list.clear();
 
+    uint64_t measured_bit = 0;
+    uint64_t const num_samples = 1ULL << num_qubits;
+
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
-        if (false) { /* begin measurement */
-            uint64_t measured_bit = 0;
+        /* begin gate operation */
+        {
+
+            ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
+
+            target_qubit_num_logical_list = {0};
+            positive_control_qubit_num_logical_list = {};
+            negative_control_qubit_num_logical_list = {};
+
+            operate_gate<cn_h>();
+
+            for(int target_qubit_num_logical = 1; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
+            {
+                target_qubit_num_logical_list = {target_qubit_num_logical};
+                if ((measured_bit>>target_qubit_num_logical)&1) {
+                    positive_control_qubit_num_logical_list = {};
+                    negative_control_qubit_num_logical_list = {0};
+                } else {
+                    positive_control_qubit_num_logical_list = {0};
+                    negative_control_qubit_num_logical_list = {};
+                }
+
+                operate_gate<cn_x>();
+
+            } /* target_qubit_num_logical loop */
+
+            ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
+
+            ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
+
+            ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
+
+            MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+            elapsed_ms = elapsed_ms_2;
+
+        }
+        /* end gate operation */
+
+        /* begin measurement */
+        {
+            measured_bit = 0;
 
             for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
                 int const measured_value = measure_qubit(measure_qubit_num_logical);
@@ -1123,57 +1164,10 @@ int main(int argc, char** argv) {
             if (proc_num == 0) {
                 fprintf(stdout, "%llu\n", measured_bit);
             }
+
         }
         /* end measurement */
 
-        if (true) {
-
-            /* begin gate operation */
-            {
-
-                ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
-
-                for(int target_qubit_num_logical = 0; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
-                {
-                    target_qubit_num_logical_list = {target_qubit_num_logical};
-                    positive_control_qubit_num_logical_list = {};
-                    negative_control_qubit_num_logical_list = {};
-
-                    operate_gate<cn_h>();
-
-                } /* target_qubit_num_logical loop */
-
-                ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
-
-                ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-
-                ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-
-                MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-                elapsed_ms = elapsed_ms_2;
-
-            }
-            /* end gate operation */
-
-            /* begin measurement */
-            {
-                uint64_t measured_bit = 0;
-
-                for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
-                    int const measured_value = measure_qubit(measure_qubit_num_logical);
-                    if (measured_value) {
-                        measured_bit |= 1ULL << measure_qubit_num_logical;
-                    }
-                }
-
-                if (proc_num == 0) {
-                    fprintf(stdout, "%llu\n", measured_bit);
-                }
-
-            }
-            /* end measurement */
-
-        }
     }
 
     if (flag_save_statevector) { save_statevector(); }
