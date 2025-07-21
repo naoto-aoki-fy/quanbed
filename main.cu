@@ -562,6 +562,45 @@ void initialize_laod_statevector() {
     ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 } /* initialize_laod_statevector */
 
+void prepare_control_qubit_num_list() {
+
+    std::vector<int>* const measured_X_qubit_num_logical_list_list[] = {
+        &measured_0_qubit_num_logical_list,
+        &measured_1_qubit_num_logical_list
+    };
+
+    std::vector<int>* const measured_X_qubit_num_logical_list_copy_list[] = {
+        &measured_0_qubit_num_logical_list_copy,
+        &measured_1_qubit_num_logical_list_copy
+    };
+
+    std::vector<int>* const X_control_qubit_num_logical_list_list[] = {
+        &negative_control_qubit_num_logical_list,
+        &positive_control_qubit_num_logical_list
+    };
+
+    #pragma unroll
+    for(int measured_value = 0; measured_value < 2; measured_value++) {
+        measured_X_qubit_num_logical_list_copy_list[measured_value]->clear();
+        for (int mXqnl_idx = 0; mXqnl_idx < measured_X_qubit_num_logical_list_list[measured_value]->size(); mXqnl_idx++) {
+            auto const mXqn = measured_X_qubit_num_logical_list_list[measured_value]->operator[](mXqnl_idx);
+            bool is_target = false;
+            for (int tqn_idx = 0; tqn_idx < target_qubit_num_logical_list.size(); tqn_idx++) {
+                auto const tqn = target_qubit_num_logical_list[tqn_idx];
+                if (mXqn == tqn) {
+                    is_target = true;
+                    break;
+                }
+            }
+            if (!is_target) {
+                measured_X_qubit_num_logical_list_copy_list[measured_value]->push_back(mXqn);
+                X_control_qubit_num_logical_list_list[measured_value]->push_back(mXqn);
+            }
+        }
+    }
+
+} /* prepare_control_qubit_num_list */
+
 void ensure_local_qubits() {
     target_qubit_num_physical_list.resize(target_qubit_num_logical_list.size());
     for (int tqni = 0; tqni < target_qubit_num_logical_list.size(); tqni++) {
@@ -1097,31 +1136,7 @@ int main(int argc, char** argv) {
                     positive_control_qubit_num_logical_list = {};
                     negative_control_qubit_num_logical_list = {};
 
-                    auto prepare_control_qubit_num_list_func = [&] (std::vector<int>& measured_X_qubit_num_logical_list, std::vector<int>& measured_X_qubit_num_logical_list_copy, std::vector<int>& X_control_qubit_num_logical_list) {
-                        measured_X_qubit_num_logical_list_copy.clear();
-                        for (int mXqnl_idx = 0; mXqnl_idx < measured_X_qubit_num_logical_list.size(); mXqnl_idx++) {
-                            auto const mXqn = measured_X_qubit_num_logical_list[mXqnl_idx];
-                            bool is_target = false;
-                            for (int tqn_idx = 0; tqn_idx < target_qubit_num_logical_list.size(); tqn_idx++) {
-                                auto const tqn = target_qubit_num_logical_list[tqn_idx];
-                                if (mXqn == tqn) {
-                                    is_target = true;
-                                    break;
-                                }
-                            }
-                            if (!is_target) {
-                                measured_X_qubit_num_logical_list_copy.push_back(mXqn);
-                                X_control_qubit_num_logical_list.push_back(mXqn);
-                            }
-                        }
-                    };
-
-                    // if target is already measured (0)
-                    prepare_control_qubit_num_list_func(measured_0_qubit_num_logical_list, measured_0_qubit_num_logical_list_copy, negative_control_qubit_num_logical_list);
-
-                    // if target is already measured (1)
-                    prepare_control_qubit_num_list_func(measured_1_qubit_num_logical_list, measured_1_qubit_num_logical_list_copy, positive_control_qubit_num_logical_list);
-
+                    prepare_control_qubit_num_list();
                     ensure_local_qubits();
                     check_control_qubit_num_physical();
                     prepare_operating_gate();
