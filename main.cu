@@ -790,22 +790,21 @@ void prepare_operating_gate() {
         bool is_measured = false;
         int measured_value = 0;
 
-        for(int m0qnl_idx = 0; m0qnl_idx < measured_0_qubit_num_logical_list.size(); m0qnl_idx++) {
-            auto const m0qn_phys = perm_l2p[measured_0_qubit_num_logical_list[m0qnl_idx]];
-            if (m0qn_phys == tqn_phys) {
-                is_measured = true;
-                break;
-            }
-        }
+        std::vector<int>* const measured_X_qubit_num_logical_list_list[] = {
+            &measured_0_qubit_num_logical_list,
+            &measured_1_qubit_num_logical_list
+        };
 
-        if(!is_measured)
-        for(int m1qnl_idx = 0; m1qnl_idx < measured_1_qubit_num_logical_list.size(); m1qnl_idx++) {
-            auto const m1qn_phys = perm_l2p[measured_1_qubit_num_logical_list[m1qnl_idx]];
-            if (m1qn_phys == tqn_phys) {
-                is_measured = true;
-                measured_value = 1;
-                break;
+        for (int loop_measured_value = 0; loop_measured_value < 2; loop_measured_value++) {
+            for(int mXqnl_idx = 0; mXqnl_idx < measured_X_qubit_num_logical_list_list[loop_measured_value]->size(); mXqnl_idx++) {
+                auto const mXqn_phys = perm_l2p[measured_X_qubit_num_logical_list_list[loop_measured_value]->operator[](mXqnl_idx)];
+                if (mXqn_phys == tqn_phys) {
+                    is_measured = true;
+                    measured_value = loop_measured_value;
+                    break;
+                }
             }
+            if (is_measured) { break; }
         }
 
         if (is_measured) {
