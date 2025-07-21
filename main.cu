@@ -291,9 +291,6 @@ struct simulator {
 
 /* begin simulator variables */
 
-int argc;
-char** argv;
-
 int num_qubits;
 
 bool flag_calculate_checksum;
@@ -388,7 +385,7 @@ simulator() {}
 
 void setup(int num_rand_areas_times_num_procs) {
 
-    MPI_Init(&argc, &argv);
+    MPI_Init(NULL, NULL);
 
     MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
