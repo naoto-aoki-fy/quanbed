@@ -51,6 +51,12 @@ __global__ void initstate_sequential_kernel(qcs::complex_t* const data_global, i
     data_global[idx] = idx + num_threads * proc_num;
 }
 
+__global__ void initstate_flat_kernel(qcs::complex_t* const data_global)
+{
+    uint64_t const idx = (uint64_t)blockDim.x * (uint64_t)blockIdx.x + (uint64_t)threadIdx.x;
+    data_global[idx] = 1;
+}
+
 struct kernel_common_struct {
     int num_qubits;
     qcs::complex_t* state_data_device;
@@ -275,6 +281,7 @@ namespace cubUtility {
 
 enum class initstate_enum {
     sequential,
+    flat,
     zero,
     entangled,
     use_curand,
@@ -480,6 +487,22 @@ void initialize_sequential() {
     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
 
 } /* initialize_sequential */
+
+void initialize_flat() {
+
+    uint64_t num_blocks_init;
+    uint64_t block_size_init;
+    if (num_qubits_local >= log_block_size_max) {
+        num_blocks_init = num_states_local >> log_block_size_max;
+        block_size_init = block_size_max;
+    } else {
+        num_blocks_init = 1;
+        block_size_init = num_states_local;
+    }
+
+    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_flat_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device);
+
+} /* initialize_flat */
 
 void initialize_zero() {
     if (proc_num == 0) {
@@ -1065,9 +1088,9 @@ void operate_gate() {
 
 }
 
-int main(int argc, char** argv) {
+int GHZ_circuit_sample(int argc, char** argv) {
 
-    flag_calculate_checksum = true;
+    flag_calculate_checksum = false;
     use_unified_memory = false;
     initstate_choice = initstate_enum::zero;
     flag_save_statevector = false;
@@ -1078,6 +1101,9 @@ int main(int argc, char** argv) {
     switch (initstate_choice) {
         case initstate_enum::sequential:
             initialize_sequential();
+            break;
+        case initstate_enum::flat:
+            initialize_flat();
             break;
         case initstate_enum::zero:
             initialize_zero();
@@ -1102,6 +1128,8 @@ int main(int argc, char** argv) {
     if(proc_num==0) {
         fprintf(stderr, "[info] gpu measurement\n");
     }
+
+    initialize_zero();
 
     engine = std::mt19937(rng_seed + 1);
     measured_0_qubit_num_logical_list.clear();
@@ -1177,7 +1205,91 @@ int main(int argc, char** argv) {
 
     return 0;
 
+}; /* GHZ_circuit_sample */
+
+int main(int argc, char** argv) {
+
+    flag_calculate_checksum = true;
+    use_unified_memory = false;
+    initstate_choice = initstate_enum::flat;
+    flag_save_statevector = false;
+
+    setup(8 /* num_rand_areas_times_num_procs */);
+    ATLC_DEFER_FUNC(dispose);
+
+    switch (initstate_choice) {
+        case initstate_enum::sequential:
+            initialize_sequential();
+            break;
+        case initstate_enum::flat:
+            initialize_flat();
+            break;
+        case initstate_enum::zero:
+            initialize_zero();
+            break;
+        case initstate_enum::entangled:
+            initialize_entangled();
+            break;
+        case initstate_enum::use_curand:
+            initialize_use_curand();
+            break;
+        case initstate_enum::laod_statevector:
+            initialize_laod_statevector();
+            break;
+        default:
+            throw initstate_choice;
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    /* measurement */
+
+    if(proc_num==0) {
+        fprintf(stderr, "[info] gpu measurement\n");
+    }
+
+    engine = std::mt19937(rng_seed + 1);
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
+
+    uint64_t measured_bit = 0;
+    uint64_t const num_samples = 1ULL << num_qubits;
+
+    for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
+
+        // reset lazy view
+        measured_0_qubit_num_logical_list.clear();
+        measured_1_qubit_num_logical_list.clear();
+
+        /* begin measurement */
+        {
+            measured_bit = 0;
+
+            for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+                int const measured_value = measure_qubit(measure_qubit_num_logical);
+                if (measured_value) {
+                    measured_bit |= 1ULL << measure_qubit_num_logical;
+                }
+            }
+
+            if (proc_num == 0) {
+                fprintf(stdout, "%llu\n", measured_bit);
+            }
+
+        }
+        /* end measurement */
+
+    }
+
+    if (flag_save_statevector) { save_statevector(); }
+    if (flag_calculate_checksum) { calculate_checksum(); }
+
+    MPI_Finalize();
+
+    return 0;
+
 }; /* main */
+
 
 void dispose() {
     ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
