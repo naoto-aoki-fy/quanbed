@@ -2,7 +2,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
-#include <stdint.h>
+#include <cstdint>
+#include <cinttypes>
 #include <unistd.h>
 
 #include <stdexcept>
@@ -28,6 +29,7 @@
 #include <nccl.h>
 #include <openssl/evp.h>
 
+#include <atlc/format.hpp>
 #include <atlc/log2_int.hpp>
 #include <atlc/mpi.hpp>
 #include <atlc/cuda.hpp>
@@ -42,7 +44,7 @@ typedef double float_t;
 typedef cuda::std::complex<qcs::float_t> complex_t;
 typedef cuda::std::array<qcs::float_t, 2> float2_t;
 
-constexpr int const kernel_input_max_size = 256;
+constexpr uint64_t kernel_input_max_size = 256;
 
 __global__ void initstate_sequential_kernel(qcs::complex_t* const data_global, int proc_num)
 {
@@ -424,7 +426,7 @@ void setup(int num_rand_areas_times_num_procs) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    rng_seed = 1;
+    rng_seed = 123456;
     // std::random_device rng;
     // rng_seed = rng();
 
@@ -774,9 +776,7 @@ void prepare_operating_gate() {
         target_qubit_num_physical_list.size()
     );
     if (qkiqn_size > qcs::kernel_input_max_size) {
-        std::vector<char> runtime_error_message(256);
-        sprintf(runtime_error_message.data(), "qkiqn_size(%llu) > qcs::kernel_input_max_size(%llu)", qkiqn_size, qcs::kernel_input_max_size);
-        throw std::runtime_error(runtime_error_message.data());
+        throw std::runtime_error(atlc::format("qkiqn_size(%" PRIu64 ") > qcs::kernel_input_max_size(%" PRIu64 ")", qkiqn_size, qcs::kernel_input_max_size));
     }
     qcs_kernel_input_host_buffer.resize(qkiqn_size);
     qcs::kernel_input_qnlist_struct* const qcs_kernel_input_host = (qcs::kernel_input_qnlist_struct*)qcs_kernel_input_host_buffer.data();
@@ -894,17 +894,13 @@ void save_statevector() {
                 }
                 int const ret_fseek = fseek(fp, state_num_logical * sizeof(qcs::complex_t), SEEK_SET);
                 if (ret_fseek!=0) {
-                    fprintf(stderr, "errno=%d\n", errno);
-                    std::vector<char> error_buf(128);
-                    sprintf(error_buf.data(), "ret_fseek=%d", ret_fseek);
-                    throw std::runtime_error(error_buf.data());
+                    auto const errno_saved = errno;
+                    throw std::runtime_error(atlc::format("errorno=%d ret_fseek=%d", errno_saved, ret_fseek));
                 }
                 size_t const ret = fwrite(&state_data_host[state_num_physical_local], sizeof(qcs::complex_t), 1, fp);
                 if (ret != 1) {
-                    fprintf(stderr, "errno=%d\n", errno);
-                    std::vector<char> error_buf(128);
-                    sprintf(error_buf.data(), "fwrite failed ret=%d", ret);
-                    throw std::runtime_error(error_buf.data());
+                    auto const errno_saved = errno;
+                    throw std::runtime_error(atlc::format("fwrite failed ret=%zu errno=%d", ret, errno_saved));
                 }
             }
             fflush(fp);
@@ -1190,7 +1186,7 @@ int GHZ_circuit_sample(int argc, char** argv) {
             }
 
             if (proc_num == 0) {
-                fprintf(stdout, "%llu\n", measured_bit);
+                fprintf(stdout, "%" PRIu64 "\n", measured_bit);
             }
 
         }
@@ -1209,9 +1205,9 @@ int GHZ_circuit_sample(int argc, char** argv) {
 
 int main(int argc, char** argv) {
 
-    flag_calculate_checksum = true;
+    flag_calculate_checksum = false;
     use_unified_memory = false;
-    initstate_choice = initstate_enum::flat;
+    initstate_choice = initstate_enum::sequential;
     flag_save_statevector = false;
 
     setup(8 /* num_rand_areas_times_num_procs */);
@@ -1273,7 +1269,7 @@ int main(int argc, char** argv) {
             }
 
             if (proc_num == 0) {
-                fprintf(stdout, "%llu\n", measured_bit);
+                fprintf(stdout, "%" PRIu64 "\n", measured_bit);
             }
 
         }
