@@ -730,6 +730,8 @@ void check_control_qubit_num_physical() {
     /* check whether proc_num is under control condition */
     control_condition = true;
 
+    // todo: refactor
+
     positive_control_qubit_num_physical_list.resize(positive_control_qubit_num_logical_list.size());
     positive_control_qubit_num_physical_global_list.resize(0);
     positive_control_qubit_num_physical_local_list.resize(0);
