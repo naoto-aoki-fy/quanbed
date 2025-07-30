@@ -296,12 +296,9 @@ struct simulator {
 
 int num_qubits;
 
-bool flag_calculate_checksum;
 bool use_unified_memory;
 
 initstate_enum initstate_choice;
-
-bool flag_save_statevector;
 
 float elapsed_ms, elapsed_ms_2;
 
@@ -326,6 +323,7 @@ std::vector<int> perm_l2p;
 int num_samples;
 int rng_seed;
 std::mt19937 engine;
+int num_rand_areas_times_num_procs;
 
 int log_num_procs;
 int log_block_size_max;
@@ -384,12 +382,15 @@ bool control_condition;
 
 /* end simulator variables */
 
-simulator() {}
+simulator() :
+rng_seed(123456),
+use_unified_memory(false),
+num_rand_areas_times_num_procs(8)
+{}
 
-void setup(int num_rand_areas_times_num_procs) {
+void setup() {
 
     MPI_Init(NULL, NULL);
-
     MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
 
@@ -397,6 +398,9 @@ void setup(int num_rand_areas_times_num_procs) {
         fprintf(stderr, "[info] num_procs=%d\n", num_procs);
     }
 
+    if (num_rand_areas_times_num_procs < num_procs) {
+        throw std::runtime_error(atlc::format("num_rand_areas_times_num_procs %d < num_procs %d", num_rand_areas_times_num_procs, num_procs));
+    }
     num_rand_areas = num_rand_areas_times_num_procs / num_procs;
 
     atlc::group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
@@ -425,10 +429,6 @@ void setup(int num_rand_areas_times_num_procs) {
         perm_p2l[qubit_num] = qubit_num;
         perm_l2p[qubit_num] = qubit_num;
     }
-
-    rng_seed = 123456;
-    // std::random_device rng;
-    // rng_seed = rng();
 
     log_num_procs = atlc::log2_int(num_procs);
 
@@ -472,6 +472,12 @@ void setup(int num_rand_areas_times_num_procs) {
 
     ATLC_CHECK_CUDA(cudaMallocAsync, &cub_temp_buffer_device, 1, stream);
     cub_temp_buffer_device_size = 1;
+
+    engine = std::mt19937(rng_seed + 1);
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
+
+    MPI_Barrier(MPI_COMM_WORLD);
 } /* setup */
 
 void initialize_sequential() {
@@ -1075,52 +1081,7 @@ void operate_gate() {
 
 }
 
-int GHZ_circuit_sample(int argc, char** argv) {
-
-    flag_calculate_checksum = false;
-    use_unified_memory = false;
-    initstate_choice = initstate_enum::zero;
-    flag_save_statevector = false;
-
-    setup(8 /* num_rand_areas_times_num_procs */);
-    ATLC_DEFER_FUNC(dispose);
-
-    switch (initstate_choice) {
-        case initstate_enum::sequential:
-            initialize_sequential();
-            break;
-        case initstate_enum::flat:
-            initialize_flat();
-            break;
-        case initstate_enum::zero:
-            initialize_zero();
-            break;
-        case initstate_enum::entangled:
-            initialize_entangled();
-            break;
-        case initstate_enum::use_curand:
-            initialize_use_curand();
-            break;
-        case initstate_enum::laod_statevector:
-            initialize_laod_statevector();
-            break;
-        default:
-            throw initstate_choice;
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    /* measurement */
-
-    if(proc_num==0) {
-        fprintf(stderr, "[info] gpu measurement\n");
-    }
-
-    initialize_zero();
-
-    engine = std::mt19937(rng_seed + 1);
-    measured_0_qubit_num_logical_list.clear();
-    measured_1_qubit_num_logical_list.clear();
+void GHZ_circuit_sample() {
 
     uint64_t measured_bit = 0;
     uint64_t const num_samples = 1ULL << num_qubits;
@@ -1185,60 +1146,9 @@ int GHZ_circuit_sample(int argc, char** argv) {
 
     }
 
-    if (flag_save_statevector) { save_statevector(); }
-    if (flag_calculate_checksum) { calculate_checksum(); }
-
-    MPI_Finalize();
-
-    return 0;
-
 }; /* GHZ_circuit_sample */
 
-int main(int argc, char** argv) {
-
-    flag_calculate_checksum = false;
-    use_unified_memory = false;
-    initstate_choice = initstate_enum::sequential;
-    flag_save_statevector = false;
-
-    setup(8 /* num_rand_areas_times_num_procs */);
-    ATLC_DEFER_FUNC(dispose);
-
-    switch (initstate_choice) {
-        case initstate_enum::sequential:
-            initialize_sequential();
-            break;
-        case initstate_enum::flat:
-            initialize_flat();
-            break;
-        case initstate_enum::zero:
-            initialize_zero();
-            break;
-        case initstate_enum::entangled:
-            initialize_entangled();
-            break;
-        case initstate_enum::use_curand:
-            initialize_use_curand();
-            break;
-        case initstate_enum::laod_statevector:
-            initialize_laod_statevector();
-            break;
-        default:
-            throw initstate_choice;
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    /* measurement */
-
-    if(proc_num==0) {
-        fprintf(stderr, "[info] gpu measurement\n");
-    }
-
-    engine = std::mt19937(rng_seed + 1);
-    measured_0_qubit_num_logical_list.clear();
-    measured_1_qubit_num_logical_list.clear();
-
+void measurement_sample() {
     uint64_t measured_bit = 0;
     uint64_t const num_samples = 1ULL << num_qubits;
 
@@ -1268,6 +1178,45 @@ int main(int argc, char** argv) {
 
     }
 
+} /* measurement_sample */
+
+int main() {
+
+    constexpr bool flag_calculate_checksum = false;
+    constexpr initstate_enum initstate_choice = initstate_enum::sequential;
+    constexpr bool flag_save_statevector = false;
+
+    setup();
+    ATLC_DEFER_FUNC(dispose);
+
+    switch (initstate_choice) {
+        case initstate_enum::sequential:
+            initialize_sequential();
+            break;
+        case initstate_enum::flat:
+            initialize_flat();
+            break;
+        case initstate_enum::zero:
+            initialize_zero();
+            break;
+        case initstate_enum::entangled:
+            initialize_entangled();
+            break;
+        case initstate_enum::use_curand:
+            initialize_use_curand();
+            break;
+        case initstate_enum::laod_statevector:
+            initialize_laod_statevector();
+            break;
+        default:
+            throw initstate_choice;
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    measurement_sample();
+    // GHZ_circuit_sample();
+
     if (flag_save_statevector) { save_statevector(); }
     if (flag_calculate_checksum) { calculate_checksum(); }
 
@@ -1294,5 +1243,5 @@ void dispose() {
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
     qcs::simulator simulator;
-    return simulator.main(argc, argv);
+    return simulator.main();
 }
