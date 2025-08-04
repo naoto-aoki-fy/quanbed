@@ -915,14 +915,12 @@ void calculate_checksum() {
 
         EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
         if (!mdctx) {
-            perror("EVP_MD_CTX_new failed");
-            exit(1);
+            throw std::runtime_error("EVP_MD_CTX_new failed");
         }
+        ATLC_DEFER_FUNC(EVP_MD_CTX_free, mdctx);
 
         if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
-            perror("EVP_DigestInit_ex failed");
-            EVP_MD_CTX_free(mdctx);
-            exit(1);
+            throw std::runtime_error("EVP_DigestInit_ex failed");
         }
 
         qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states * sizeof(qcs::complex_t));
@@ -943,18 +941,14 @@ void calculate_checksum() {
             }
 
             if (EVP_DigestUpdate(mdctx, &state_data_host[state_num_physical], sizeof(qcs::complex_t)) != 1) {
-                perror("EVP_DigestUpdate failed");
-                EVP_MD_CTX_free(mdctx);
-                exit(1);
+                throw std::runtime_error("EVP_DigestUpdate failed");
             }
         }
 
         std::vector<unsigned char> evp_hash(EVP_MAX_MD_SIZE); // [EVP_MAX_MD_SIZE];
         unsigned int evp_hash_len;
         if (EVP_DigestFinal_ex(mdctx, evp_hash.data(), &evp_hash_len) != 1) {
-            perror("EVP_DigestFinal_ex failed");
-            EVP_MD_CTX_free(mdctx);
-            exit(1);
+            throw std::runtime_error("EVP_DigestFinal_ex failed");
         }
 
         fprintf(stderr, "[info] checksum: ");
@@ -963,7 +957,6 @@ void calculate_checksum() {
         }
         fprintf(stderr, "\n");
 
-        EVP_MD_CTX_free(mdctx);
     } else {
         MPI_Send(state_data_device, num_states_local * 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
     }
