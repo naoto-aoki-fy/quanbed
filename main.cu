@@ -176,106 +176,68 @@ static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& 
 
 } /* thread_num_to_state_index */
 
-struct cn_h {
-    static __device__ void apply() {
+namespace gate {
 
-        int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
+    struct hadamard {
+        __device__ void apply(qcs::complex_t const s0_in, qcs::complex_t const s1_in, qcs::complex_t& s0_out, qcs::complex_t& s1_out) const {
+            s0_out = s0_in + s1_in;
+            s1_out = s0_in - s1_in;
+        }
+    };
 
-        uint64_t index_state_0, index_state_1;
-        int measured_state;
-        thread_num_to_state_index(thread_num, index_state_0, index_state_1, measured_state);
+    struct identity {
+        __device__ void apply(qcs::complex_t const s0_in, qcs::complex_t const s1_in, qcs::complex_t& s0_out, qcs::complex_t& s1_out) const {
+            s0_out = s0_in;
+            s1_out = s1_in;
+        }
+    };
 
-        qcs::complex_t const amp_state_0 = (measured_state != 1)? qcs::kernel_common_constant.state_data_device[index_state_0] : 0;
-        qcs::complex_t const amp_state_1 = (measured_state != 0)? qcs::kernel_common_constant.state_data_device[index_state_1] : 0;
+    struct x {
+        __device__ void apply(qcs::complex_t const s0_in, qcs::complex_t const s1_in, qcs::complex_t& s0_out, qcs::complex_t& s1_out) const {
+            s0_out = s1_in;
+            s1_out = s0_in;
+        }
+    };
 
-        // qcs::kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1) * M_SQRT1_2;
-        // qcs::kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1) * M_SQRT1_2;
-        qcs::kernel_common_constant.state_data_device[index_state_0] = (amp_state_0 + amp_state_1);
-        qcs::kernel_common_constant.state_data_device[index_state_1] = (amp_state_0 - amp_state_1);
-
-    }
-}; /* cn_h */
-
-template<typename GateType>
-__global__ void cuda_gate() {
-    GateType::apply();
 }
 
-struct cn_id {
-    static __device__ void apply() {
+template<typename GateType>
+__global__ void cuda_gate(GateType const gateobj) {
 
-        int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
+    int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
 
-        uint64_t index_state_0, index_state_1;
-        int measured_state;
-        thread_num_to_state_index(thread_num, index_state_0, index_state_1, measured_state);
+    uint64_t index_state_0, index_state_1;
+    int measured_state;
+    thread_num_to_state_index(thread_num, index_state_0, index_state_1, measured_state);
 
-        // qcs::complex_t const amp_state_0 = (measured_state!=1)? qcs::kernel_common_constant.state_data_device[index_state_0] : 0;
-        // qcs::complex_t const amp_state_1 = (measured_state!=0)? qcs::kernel_common_constant.state_data_device[index_state_1] : 0;
+    qcs::complex_t const s0_in = (measured_state != 1)? qcs::kernel_common_constant.state_data_device[index_state_0] : 0;
+    qcs::complex_t const s1_in = (measured_state != 0)? qcs::kernel_common_constant.state_data_device[index_state_1] : 0;
 
-        if(measured_state == 1) {
-            qcs::kernel_common_constant.state_data_device[index_state_0] = 0;
-        } else if(measured_state == 0) {
-            qcs::kernel_common_constant.state_data_device[index_state_1] = 0;
-        }
-
-    }
-}; /* cn_h */
-
-
-struct cn_x {
-    static __device__ void apply() {
-
-        int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
-
-        uint64_t index_state_0, index_state_1;
-        int measured_state;
-        thread_num_to_state_index(thread_num, index_state_0, index_state_1, measured_state);
-
-        qcs::complex_t const amp_state_0 = (measured_state!=1)? qcs::kernel_common_constant.state_data_device[index_state_0] : 0;
-        qcs::complex_t const amp_state_1 = (measured_state!=0)? qcs::kernel_common_constant.state_data_device[index_state_1] : 0;
-
-        qcs::kernel_common_constant.state_data_device[index_state_0] = amp_state_1;
-        qcs::kernel_common_constant.state_data_device[index_state_1] = amp_state_0;
-
-    }
-}; /* cn_x */
+    gateobj.apply(s0_in, s1_in, qcs::kernel_common_constant.state_data_device[index_state_0], qcs::kernel_common_constant.state_data_device[index_state_1]);
+}
 
 namespace cubUtility {
 
     struct float2Add {
-        __host__ __device__ __forceinline__
-        qcs::float2_t operator()(const qcs::float2_t& a, const qcs::float2_t& b) const {
+        __device__ qcs::float2_t operator()(const qcs::float2_t& a, const qcs::float2_t& b) const {
             return {a[0] + b[0], a[1] + b[1]};
         }
     };
 
     struct IndirectLoad
     {
-        __host__ __device__ __forceinline__
-        qcs::float2_t operator()(uint64_t thread_num) const
+        __device__ qcs::float2_t operator()(uint64_t thread_num) const
         {
-    #ifdef __CUDA_ARCH__
             uint64_t index_state_0, index_state_1;
             int measured_state;
             thread_num_to_state_index(thread_num, index_state_0, index_state_1, measured_state);
 
+            // since target_qubit must be unmeasured, branching is not necessary.
             return qcs::float2_t{
                 cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]),
                 cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])
             };
 
-            // return qcs::float2_t{
-            //     (measured_state!=1)?
-            //         cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]) :
-            //         0,
-            //     (measured_state!=0)?
-            //         cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1]) :
-            //         0
-            // };
-    #else
-            return qcs::float2_t();
-    #endif
         }
     };
 
@@ -1061,14 +1023,14 @@ int measure_qubit(int const measure_qubit_num_logical) {
 }
 
 template<typename GateType>
-void operate_gate() {
+void operate_gate(GateType gateobj) {
 
     prepare_control_qubit_num_list();
     ensure_local_qubits();
     check_control_qubit_num_physical();
     prepare_operating_gate();
 
-    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate<GateType>, num_blocks_gateop, block_size_gateop, 0, stream);
+    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate<GateType>, num_blocks_gateop, block_size_gateop, 0, stream, gateobj);
 
     update_measured_list();
 
@@ -1076,19 +1038,21 @@ void operate_gate() {
 
 void GHZ_circuit_sample() {
 
+    initialize_zero();
+    // initialize_flat();
+
     uint64_t measured_bit = 0;
     uint64_t const num_samples = 1ULL << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
         /* begin gate operation */
-        ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
 
         target_qubit_num_logical_list = {0};
         positive_control_qubit_num_logical_list = {};
         negative_control_qubit_num_logical_list = {};
 
-        operate_gate<cn_h>();
+        operate_gate(gate::hadamard());
 
         for(int target_qubit_num_logical = 1; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
         {
@@ -1101,18 +1065,10 @@ void GHZ_circuit_sample() {
                 negative_control_qubit_num_logical_list = {};
             }
 
-            operate_gate<cn_x>();
+            operate_gate(gate::x());
 
         } /* target_qubit_num_logical loop */
 
-        ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
-
-        ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-
-        ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-
-        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-        elapsed_ms = elapsed_ms_2;
         /* end gate operation */
 
         /* begin measurement */
@@ -1135,12 +1091,38 @@ void GHZ_circuit_sample() {
 }; /* GHZ_circuit_sample */
 
 void measurement_sample() {
+
+    constexpr initstate_enum initstate_choice = initstate_enum::flat;
+    switch (initstate_choice) {
+        case initstate_enum::sequential:
+            initialize_sequential();
+            break;
+        case initstate_enum::flat:
+            initialize_flat();
+            break;
+        case initstate_enum::zero:
+            initialize_zero();
+            break;
+        case initstate_enum::entangled:
+            initialize_entangled();
+            break;
+        case initstate_enum::use_curand:
+            initialize_use_curand();
+            break;
+        case initstate_enum::laod_statevector:
+            initialize_laod_statevector();
+            break;
+        default:
+            throw initstate_choice;
+    }
+
+
     uint64_t measured_bit = 0;
     uint64_t const num_samples = 1ULL << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
-        // reset lazy view
+        // forget measurement
         measured_0_qubit_num_logical_list.clear();
         measured_1_qubit_num_logical_list.clear();
 
@@ -1166,37 +1148,14 @@ void measurement_sample() {
 int main() {
 
     constexpr bool flag_calculate_checksum = false;
-    constexpr initstate_enum initstate_choice = initstate_enum::sequential;
+    
     constexpr bool flag_save_statevector = false;
 
     setup();
     ATLC_DEFER_FUNC(dispose);
 
-    switch (initstate_choice) {
-        case initstate_enum::sequential:
-            initialize_sequential();
-            break;
-        case initstate_enum::flat:
-            initialize_flat();
-            break;
-        case initstate_enum::zero:
-            initialize_zero();
-            break;
-        case initstate_enum::entangled:
-            initialize_entangled();
-            break;
-        case initstate_enum::use_curand:
-            initialize_use_curand();
-            break;
-        case initstate_enum::laod_statevector:
-            initialize_laod_statevector();
-            break;
-        default:
-            throw initstate_choice;
-    }
-
-    measurement_sample();
-    // GHZ_circuit_sample();
+    // measurement_sample();
+    GHZ_circuit_sample();
 
     if (flag_save_statevector) { save_statevector(); }
     if (flag_calculate_checksum) { calculate_checksum(); }
