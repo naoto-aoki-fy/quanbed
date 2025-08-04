@@ -565,17 +565,13 @@ void prepare_control_qubit_num_list() {
         measured_X_qubit_num_logical_list_copy_list[measured_value]->clear();
         for (int mXqnl_idx = 0; mXqnl_idx < measured_X_qubit_num_logical_list_list[measured_value]->size(); mXqnl_idx++) {
             auto const mXqn = measured_X_qubit_num_logical_list_list[measured_value]->operator[](mXqnl_idx);
-            bool is_target = false;
-            for (int tqn_idx = 0; tqn_idx < target_qubit_num_logical_list.size(); tqn_idx++) {
-                auto const tqn = target_qubit_num_logical_list[tqn_idx];
-                if (mXqn == tqn) {
-                    is_target = true;
-                    break;
-                }
-            }
+            bool const is_target = std::find(target_qubit_num_logical_list.begin(), target_qubit_num_logical_list.end(), mXqn) != target_qubit_num_logical_list.end();
             if (!is_target) {
                 measured_X_qubit_num_logical_list_copy_list[measured_value]->push_back(mXqn);
-                X_control_qubit_num_logical_list_list[measured_value]->push_back(mXqn);
+                bool const is_control = std::find(X_control_qubit_num_logical_list_list[measured_value]->begin(), X_control_qubit_num_logical_list_list[measured_value]->end(), mXqn) == X_control_qubit_num_logical_list_list[measured_value]->end();
+                if (!is_control) {
+                    X_control_qubit_num_logical_list_list[measured_value]->push_back(mXqn);
+                }
             }
         }
     }
@@ -1148,7 +1144,6 @@ void measurement_sample() {
 int main() {
 
     constexpr bool flag_calculate_checksum = false;
-    
     constexpr bool flag_save_statevector = false;
 
     setup();
