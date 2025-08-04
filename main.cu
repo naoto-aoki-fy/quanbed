@@ -1089,58 +1089,51 @@ void GHZ_circuit_sample() {
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
         /* begin gate operation */
+        ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
+
+        target_qubit_num_logical_list = {0};
+        positive_control_qubit_num_logical_list = {};
+        negative_control_qubit_num_logical_list = {};
+
+        operate_gate<cn_h>();
+
+        for(int target_qubit_num_logical = 1; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
         {
+            target_qubit_num_logical_list = {target_qubit_num_logical};
+            if ((measured_bit>>target_qubit_num_logical)&1) {
+                positive_control_qubit_num_logical_list = {};
+                negative_control_qubit_num_logical_list = {0};
+            } else {
+                positive_control_qubit_num_logical_list = {0};
+                negative_control_qubit_num_logical_list = {};
+            }
 
-            ATLC_CHECK_CUDA(cudaEventRecord, event_1, stream);
+            operate_gate<cn_x>();
 
-            target_qubit_num_logical_list = {0};
-            positive_control_qubit_num_logical_list = {};
-            negative_control_qubit_num_logical_list = {};
+        } /* target_qubit_num_logical loop */
 
-            operate_gate<cn_h>();
+        ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
 
-            for(int target_qubit_num_logical = 1; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
-            {
-                target_qubit_num_logical_list = {target_qubit_num_logical};
-                if ((measured_bit>>target_qubit_num_logical)&1) {
-                    positive_control_qubit_num_logical_list = {};
-                    negative_control_qubit_num_logical_list = {0};
-                } else {
-                    positive_control_qubit_num_logical_list = {0};
-                    negative_control_qubit_num_logical_list = {};
-                }
+        ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
 
-                operate_gate<cn_x>();
+        ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
 
-            } /* target_qubit_num_logical loop */
-
-            ATLC_CHECK_CUDA(cudaEventRecord, event_2, stream);
-
-            ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
-
-            ATLC_CHECK_CUDA(cudaEventElapsedTime, &elapsed_ms, event_1, event_2);
-
-            MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-            elapsed_ms = elapsed_ms_2;
-
-        }
+        MPI_Reduce(&elapsed_ms, &elapsed_ms_2, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+        elapsed_ms = elapsed_ms_2;
         /* end gate operation */
 
         /* begin measurement */
-        {
-            measured_bit = 0;
+        measured_bit = 0;
 
-            for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
-                int const measured_value = measure_qubit(measure_qubit_num_logical);
-                if (measured_value) {
-                    measured_bit |= 1ULL << measure_qubit_num_logical;
-                }
+        for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+            int const measured_value = measure_qubit(measure_qubit_num_logical);
+            if (measured_value) {
+                measured_bit |= 1ULL << measure_qubit_num_logical;
             }
+        }
 
-            if (proc_num == 0) {
-                fprintf(stdout, "%" PRIu64 "\n", measured_bit);
-            }
-
+        if (proc_num == 0) {
+            fprintf(stdout, "%" PRIu64 "\n", measured_bit);
         }
         /* end measurement */
 
@@ -1159,20 +1152,17 @@ void measurement_sample() {
         measured_1_qubit_num_logical_list.clear();
 
         /* begin measurement */
-        {
-            measured_bit = 0;
+        measured_bit = 0;
 
-            for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
-                int const measured_value = measure_qubit(measure_qubit_num_logical);
-                if (measured_value) {
-                    measured_bit |= 1ULL << measure_qubit_num_logical;
-                }
+        for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+            int const measured_value = measure_qubit(measure_qubit_num_logical);
+            if (measured_value) {
+                measured_bit |= 1ULL << measure_qubit_num_logical;
             }
+        }
 
-            if (proc_num == 0) {
-                fprintf(stdout, "%" PRIu64 "\n", measured_bit);
-            }
-
+        if (proc_num == 0) {
+            fprintf(stdout, "%" PRIu64 "\n", measured_bit);
         }
         /* end measurement */
 
@@ -1211,8 +1201,6 @@ int main() {
         default:
             throw initstate_choice;
     }
-
-    MPI_Barrier(MPI_COMM_WORLD);
 
     measurement_sample();
     // GHZ_circuit_sample();
