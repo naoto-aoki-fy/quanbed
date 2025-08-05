@@ -1068,7 +1068,11 @@ int measure_qubit(int const measure_qubit_num_logical) {
 }
 
 template<typename GateType>
-void operate_gate(GateType gateobj) {
+void operate_gate(GateType gateobj, std::vector<int>&& target_qubit_num_logical_list_input, std::vector<int>&& negative_control_qubit_num_logical_list_input, std::vector<int>&& positive_control_qubit_num_logical_list_input) {
+
+    target_qubit_num_logical_list = std::move(target_qubit_num_logical_list_input);
+    negative_control_qubit_num_logical_list = negative_control_qubit_num_logical_list_input;
+    positive_control_qubit_num_logical_list = positive_control_qubit_num_logical_list_input;
 
     prepare_control_qubit_num_list();
     if (!measured_control_condition) return;
@@ -1108,25 +1112,15 @@ void GHZ_circuit_sample() {
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
         /* begin gate operation */
-
-        target_qubit_num_logical_list = {0};
-        positive_control_qubit_num_logical_list = {};
-        negative_control_qubit_num_logical_list = {};
-
-        operate_gate(gate::hadamard());
+        operate_gate(gate::hadamard(), {0}, {}, {});
 
         for(int target_qubit_num_logical = 1; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
         {
-            target_qubit_num_logical_list = {target_qubit_num_logical};
             if ((measured_bit>>target_qubit_num_logical)&1) {
-                positive_control_qubit_num_logical_list = {};
-                negative_control_qubit_num_logical_list = {0};
+                operate_gate(gate::x(), {target_qubit_num_logical}, {0}, {});
             } else {
-                positive_control_qubit_num_logical_list = {0};
-                negative_control_qubit_num_logical_list = {};
+                operate_gate(gate::x(), {target_qubit_num_logical}, {}, {0});
             }
-
-            operate_gate(gate::x());
 
         } /* target_qubit_num_logical loop */
 
@@ -1177,13 +1171,13 @@ void measurement_sample() {
             throw initstate_choice;
     }
 
-
     uint64_t measured_bit = 0;
     uint64_t const num_samples = 1ULL << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
         // forget measurement
+        // warn: do not use it, unless you fully understand the behavior of lazy view.
         measured_0_qubit_num_logical_list.clear();
         measured_1_qubit_num_logical_list.clear();
 
