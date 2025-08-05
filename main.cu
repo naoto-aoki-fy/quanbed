@@ -37,6 +37,7 @@
 #include <atlc/check_cuda.hpp>
 #include <atlc/check_curand.hpp>
 #include <atlc/check_nccl.hpp>
+#include <atlc/reorder.h>
 
 #define QCS_DEBUG
 #ifdef QCS_DEBUG
@@ -46,6 +47,10 @@
 #define DEBUG_UINT_VAR(var) do {} while(0)
 #define DEBUG_FLOAT_VAR(var) do {} while(0)
 #endif
+
+#define VAR_STR_FLOAT(var) #var "=%g", (double)var
+#define VAR_STR_UINT(var) #var "=%" PRIu64, (uint64_t)var
+#define VAR_STR_INT(var) #var "=%" PRId64, (int64_t)var
 
 namespace qcs {
 
@@ -59,7 +64,7 @@ __global__ void initstate_sequential_kernel(qcs::complex_t* const data_global, i
 {
     uint64_t const num_threads = (uint64_t)gridDim.x * (uint64_t)blockDim.x;
     uint64_t const idx = (uint64_t)blockDim.x * (uint64_t)blockIdx.x + (uint64_t)threadIdx.x;
-    data_global[idx] = idx + num_threads * proc_num;
+    data_global[idx] = 1 + idx + num_threads * proc_num;
 }
 
 __global__ void initstate_flat_kernel(qcs::complex_t* const data_global)
@@ -210,6 +215,24 @@ namespace gate {
 
 }
 
+__global__ void clear_alternative_state(int target_qubit_num, int measured_value) {
+    int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
+
+    // generate index_state_0
+    uint64_t lower_mask = 0;
+    uint64_t const mask = (1ULL << (target_qubit_num)) - 1;
+    uint64_t const upper_mask = mask & ~lower_mask;
+    lower_mask = mask;
+    uint64_t index_state = (thread_num & upper_mask) | ((thread_num & ~lower_mask) << 1);
+
+    if (!measured_value) {
+        index_state = index_state | (1ULL << target_qubit_num);
+    }
+
+    qcs::kernel_common_constant.state_data_device[index_state] = 0.0;
+
+}
+
 template<typename GateType>
 __global__ void cuda_gate(GateType const gateobj) {
 
@@ -242,9 +265,14 @@ namespace cubUtility {
             thread_num_to_state_index(thread_num, index_state_0, index_state_1, measured_state);
 
             // since target_qubit must be unmeasured, branching is not necessary.
+            // return qcs::float2_t{
+            //     cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]),
+            //     cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])
+            // };
+
             return qcs::float2_t{
-                cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]),
-                cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])
+                (measured_state != 1)? cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]): 0,
+                (measured_state != 0)? cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1]): 0
             };
 
         }
@@ -870,12 +898,12 @@ void prepare_operating_gate() {
 
     block_size_gateop = 1ULL << log_block_size_gateop;
 
-    if (num_blocks_gateop==0||block_size_gateop==0) {
-        DEBUG_UINT_VAR(num_blocks_gateop);
-        DEBUG_UINT_VAR(block_size_gateop);
-        DEBUG_UINT_VAR(log_num_threads);
-        DEBUG_UINT_VAR(log_block_size_max);
-    }
+    // if (num_blocks_gateop==0||block_size_gateop==0) {
+    //     DEBUG_UINT_VAR(num_blocks_gateop);
+    //     DEBUG_UINT_VAR(block_size_gateop);
+    //     DEBUG_UINT_VAR(log_num_threads);
+    //     DEBUG_UINT_VAR(log_block_size_max);
+    // }
     
 } /* prepare_operating_gate */
 
@@ -985,6 +1013,43 @@ void calculate_checksum() {
 
 } /* calculate_checksum */
 
+
+void show_state() {
+    qcs::complex_t* state_data_host = (qcs::complex_t*)malloc(num_states_local * sizeof(qcs::complex_t));
+    ATLC_DEFER_FUNC(free, state_data_host);
+    ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_host, state_data_device, num_states_local * sizeof(qcs::complex_t), cudaMemcpyDeviceToHost, stream);
+    ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
+
+    for (uint64_t state_num = 0; state_num < num_states_local; state_num++) {
+
+        bool state_num_control_condition = true;
+
+        for(int pcqn: positive_control_qubit_num_physical_local_list) {
+            if (!((state_num>>pcqn)&1)) {
+                state_num_control_condition = false;
+            }
+        }
+        if (!state_num_control_condition) continue;
+
+        for(int ncqn: negative_control_qubit_num_physical_local_list) {
+            if (((state_num>>ncqn)&1)) {
+                state_num_control_condition = false;
+            }
+        }
+        if (!state_num_control_condition) continue;
+
+        auto real = state_data_host[state_num].real();
+        auto imag = state_data_host[state_num].imag();
+        fprintf(stderr, ATLC_REORDER("debug: " VAR_STR_INT(proc_num), " " VAR_STR_UINT(state_num), " " VAR_STR_FLOAT(real), " " VAR_STR_FLOAT(imag), "\n"));
+        // int tqn = target_qubit_num_physical_list[0];
+        // if ((state_num>>tqn)&1) {
+        //     measure_norm_host[1] += norm;
+        // } else {
+        //     measure_norm_host[0] += norm;
+        // }
+    }
+}
+
 int measure_qubit(int const measure_qubit_num_logical) {
 
     for (auto const m0qn : measured_0_qubit_num_logical_list) {
@@ -1007,7 +1072,7 @@ int measure_qubit(int const measure_qubit_num_logical) {
     check_control_qubit_num_physical();
     prepare_operating_gate();
 
-    float2_t measure_norm_host;
+    float2_t measure_norm_host{0, 0};
 
     if (control_condition) {
 
@@ -1022,7 +1087,7 @@ int measure_qubit(int const measure_qubit_num_logical) {
         uint64_t temp_sz_required;
 
         cubUtility::float2Add float2AddObj;
-        float2_t zero{};
+        float2_t zero{0, 0};
         ATLC_CHECK_CUDA(cub::DeviceReduce::Reduce, NULL, temp_sz_required, in_it, measure_norm_device, num_states_local >> num_operand_qubits, float2AddObj, zero, stream);
 
         if (cub_temp_buffer_device_size < temp_sz_required) {
@@ -1036,19 +1101,25 @@ int measure_qubit(int const measure_qubit_num_logical) {
         ATLC_CHECK_CUDA(cudaMemcpyAsync, &measure_norm_host, measure_norm_device, sizeof(float2_t), cudaMemcpyDeviceToHost, stream);
 
         ATLC_CHECK_CUDA(cudaStreamSynchronize, stream);
+
+        // show_state();
     } else {
         measure_norm_host = {0, 0};
     }
 
+    // DEBUG_FLOAT_VAR(measure_norm_host[0]);
+    // DEBUG_FLOAT_VAR(measure_norm_host[1]);
+    // fprintf(stderr, "debug: proc_num=%d control_condition=%d measure_qubit_num_logical=%llu measure_norm_host[0]=%e measure_norm_host[1]=%e\n", proc_num, (int)control_condition, measure_qubit_num_logical, measure_norm_host[0], measure_norm_host[1]);
+
 #if 1 /* parallel measurement */
-    qcs::float_t measure_norm_global[2];
+    qcs::float_t measure_norm_global[2] = {0, 0};
     MPI_Allreduce(measure_norm_host.data(), measure_norm_global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    if (proc_num==0) {
-        fprintf(stderr, "debug: measure_qubit_num_logical=%llu measure_norm_global[0]=%e measure_norm_global[1]=%e\n", measure_qubit_num_logical, measure_norm_global[0], measure_norm_global[1]);
-        // DEBUG_UINT_VAR(measure_qubit_num_logical);
-        // DEBUG_FLOAT_VAR(measure_norm_global[0]);
-        // DEBUG_FLOAT_VAR(measure_norm_global[1]);
-    }
+    // if (proc_num==0) {
+    //     fprintf(stderr, "debug: measure_qubit_num_logical=%llu measure_norm_global[0]=%e measure_norm_global[1]=%e\n", measure_qubit_num_logical, measure_norm_global[0], measure_norm_global[1]);
+    //     // DEBUG_UINT_VAR(measure_qubit_num_logical);
+    //     // DEBUG_FLOAT_VAR(measure_norm_global[0]);
+    //     // DEBUG_FLOAT_VAR(measure_norm_global[1]);
+    // }
 
     qcs::float_t const measure_norm_sum = measure_norm_global[0] + measure_norm_global[1];
 
@@ -1085,6 +1156,24 @@ int measure_qubit(int const measure_qubit_num_logical) {
     }
 #endif
 
+    {
+        uint64_t const log_num_threads = num_qubits_local - 1;
+        uint64_t log_block_size_gateop;
+    
+        if (log_block_size_max > log_num_threads) {
+            log_block_size_gateop = log_num_threads;
+            num_blocks_gateop = 1;
+        } else {
+            log_block_size_gateop = log_block_size_max;
+            num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
+        }
+
+        block_size_gateop = 1ULL << log_block_size_gateop;
+
+        auto const measure_qubit_num_physical = perm_l2p[measure_qubit_num_logical];
+        ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, clear_alternative_state, num_blocks_gateop, block_size_gateop, 0, stream, measure_qubit_num_physical, measure_result);
+    }
+
     return measure_result;
 }
 
@@ -1118,13 +1207,21 @@ void GHZ_circuit_sample() {
     // initialize_zero();
     initialize_flat();
 
-    measured_0_qubit_num_logical_list.clear();
-    measured_1_qubit_num_logical_list.clear();
-    for (int qubit_num=0; qubit_num < num_qubits; qubit_num++) {
-        measured_0_qubit_num_logical_list.push_back(qubit_num);
+    // measured_bit = 0;
+    uint64_t measured_bit = 0;
+
+    for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+        int const measured_value = measure_qubit(measure_qubit_num_logical);
+        if (measured_value) {
+            measured_bit |= 1ULL << measure_qubit_num_logical;
+        }
     }
 
-    uint64_t measured_bit = 0;
+    if (proc_num == 0) {
+        fprintf(stdout, "%" PRIu64 "\n", measured_bit);
+    }
+
+    // uint64_t measured_bit = 0;
     uint64_t const num_samples = 1ULL << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
@@ -1176,6 +1273,8 @@ void GHZ_circuit_sample() {
 
 }; /* GHZ_circuit_sample */
 
+
+
 void measurement_sample() {
 
     constexpr initstate_enum initstate_choice = initstate_enum::flat;
@@ -1207,6 +1306,9 @@ void measurement_sample() {
     uint64_t const num_samples = 1ULL << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
+
+        measured_0_qubit_num_logical_list.clear();
+        measured_1_qubit_num_logical_list.clear();
 
         /* begin measurement */
         measured_bit = 0;
