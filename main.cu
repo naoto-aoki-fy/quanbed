@@ -201,6 +201,24 @@ namespace gate {
 
 }
 
+__global__ void clear_alternative_state(int target_qubit_num, int measured_value) {
+    int64_t const thread_num = (uint64_t)threadIdx.x + (uint64_t)blockIdx.x * (uint64_t)blockDim.x;
+
+    // generate index_state_0
+    uint64_t lower_mask = 0;
+    uint64_t const mask = (1ULL << (target_qubit_num)) - 1;
+    uint64_t const upper_mask = mask & ~lower_mask;
+    lower_mask = mask;
+    uint64_t index_state = (thread_num & upper_mask) | ((thread_num & ~lower_mask) << 1);
+
+    if (!measured_value) {
+        index_state = index_state | (1ULL << target_qubit_num);
+    }
+
+    qcs::kernel_common_constant.state_data_device[index_state] = 0.0;
+
+}
+
 template<typename GateType>
 __global__ void cuda_gate(GateType const gateobj) {
 
@@ -237,6 +255,11 @@ namespace cubUtility {
                 cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]),
                 cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1])
             };
+
+            // return qcs::float2_t{
+            //     (measured_state != 1)? cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_0]): 0,
+            //     (measured_state != 0)? cuda::std::norm(qcs::kernel_common_constant.state_data_device[index_state_1]): 0
+            // };
 
         }
     };
@@ -560,6 +583,8 @@ void prepare_control_qubit_num_list() {
         &positive_control_qubit_num_logical_list
     };
 
+    control_condition = true;
+
     #pragma unroll
     for(int measured_value = 0; measured_value < 2; measured_value++) {
         measured_X_qubit_num_logical_list_copy_list[measured_value]->clear();
@@ -567,10 +592,14 @@ void prepare_control_qubit_num_list() {
             auto const mXqn = measured_X_qubit_num_logical_list_list[measured_value]->operator[](mXqnl_idx);
             bool const is_target = std::find(target_qubit_num_logical_list.begin(), target_qubit_num_logical_list.end(), mXqn) != target_qubit_num_logical_list.end();
             if (!is_target) {
+                // the qubit is kept measured
                 measured_X_qubit_num_logical_list_copy_list[measured_value]->push_back(mXqn);
-                bool const is_control = std::find(X_control_qubit_num_logical_list_list[measured_value]->begin(), X_control_qubit_num_logical_list_list[measured_value]->end(), mXqn) == X_control_qubit_num_logical_list_list[measured_value]->end();
-                if (!is_control) {
+                bool const is_control = std::find(X_control_qubit_num_logical_list_list[measured_value]->begin(), X_control_qubit_num_logical_list_list[measured_value]->end(), mXqn) != X_control_qubit_num_logical_list_list[measured_value]->end();
+                bool const is_control_other = std::find(X_control_qubit_num_logical_list_list[1-measured_value]->begin(), X_control_qubit_num_logical_list_list[1-measured_value]->end(), mXqn) != X_control_qubit_num_logical_list_list[1-measured_value]->end();
+                if ((!is_control)&&(!is_control_other)) {
                     X_control_qubit_num_logical_list_list[measured_value]->push_back(mXqn);
+                } else if (is_control_other) {
+                    control_condition = false;
                 }
             }
         }
@@ -814,6 +843,7 @@ void prepare_operating_gate() {
         num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
     }
 
+
     block_size_gateop = 1ULL << log_block_size_gateop;
 
 } /* prepare_operating_gate */
@@ -988,7 +1018,6 @@ int measure_qubit(int const measure_qubit_num_logical) {
 
     if (measure_result) { /* 1 */
         measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
-        // measured_bit |= 1ULL << measure_qubit_num_logical;
     } else { /* 0 */
         measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
     }
@@ -1015,6 +1044,25 @@ int measure_qubit(int const measure_qubit_num_logical) {
     }
 #endif
 
+    // clear alternative state
+    {
+        uint64_t const log_num_threads = num_qubits_local - 1;
+        uint64_t log_block_size_gateop;
+
+        if (log_block_size_max > log_num_threads) {
+            log_block_size_gateop = log_num_threads;
+            num_blocks_gateop = 1;
+        } else {
+            log_block_size_gateop = log_block_size_max;
+            num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
+        }
+
+        block_size_gateop = 1ULL << log_block_size_gateop;
+
+        auto const measure_qubit_num_physical = perm_l2p[measure_qubit_num_logical];
+        ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, clear_alternative_state, num_blocks_gateop, block_size_gateop, 0, stream, measure_qubit_num_physical, measure_result);
+    }
+
     return measure_result;
 }
 
@@ -1022,11 +1070,16 @@ template<typename GateType>
 void operate_gate(GateType gateobj) {
 
     prepare_control_qubit_num_list();
+    // todo: confirm the specification
+    if (!control_condition) return;
+
     ensure_local_qubits();
     check_control_qubit_num_physical();
     prepare_operating_gate();
 
-    ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate<GateType>, num_blocks_gateop, block_size_gateop, 0, stream, gateobj);
+    if (control_condition) {
+        ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate<GateType>, num_blocks_gateop, block_size_gateop, 0, stream, gateobj);
+    }
 
     update_measured_list();
 
@@ -1034,10 +1087,22 @@ void operate_gate(GateType gateobj) {
 
 void GHZ_circuit_sample() {
 
-    initialize_zero();
-    // initialize_flat();
+    // initialize_zero();
+    initialize_flat();
 
     uint64_t measured_bit = 0;
+
+    for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+        int const measured_value = measure_qubit(measure_qubit_num_logical);
+        if (measured_value) {
+            measured_bit |= 1ULL << measure_qubit_num_logical;
+        }
+    }
+
+    if (proc_num == 0) {
+        fprintf(stdout, "%" PRIu64 "\n", measured_bit);
+    }
+
     uint64_t const num_samples = 1ULL << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
