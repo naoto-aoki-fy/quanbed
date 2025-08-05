@@ -1071,7 +1071,6 @@ template<typename GateType>
 void operate_gate(GateType gateobj) {
 
     prepare_control_qubit_num_list();
-    // todo: confirm the specification
     if (!measured_control_condition) return;
 
     ensure_local_qubits();
