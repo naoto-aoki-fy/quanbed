@@ -363,7 +363,8 @@ std::vector<int> target_qubit_num_logical_list;
 std::vector<int> positive_control_qubit_num_logical_list;
 std::vector<int> negative_control_qubit_num_logical_list;
 
-bool control_condition;
+bool measured_control_condition;
+bool proc_num_control_condition;
 
 /* end simulator variables */
 
@@ -583,7 +584,7 @@ void prepare_control_qubit_num_list() {
         &positive_control_qubit_num_logical_list
     };
 
-    control_condition = true;
+    measured_control_condition = true;
 
     #pragma unroll
     for(int measured_value = 0; measured_value < 2; measured_value++) {
@@ -599,7 +600,7 @@ void prepare_control_qubit_num_list() {
                 if ((!is_control)&&(!is_control_other)) {
                     X_control_qubit_num_logical_list_list[measured_value]->push_back(mXqn);
                 } else if (is_control_other) {
-                    control_condition = false;
+                    measured_control_condition = false;
                 }
             }
         }
@@ -721,7 +722,7 @@ void ensure_local_qubits() {
 void check_control_qubit_num_physical() {
 
     /* check whether proc_num is under control condition */
-    control_condition = true;
+    proc_num_control_condition = true;
 
     std::vector<int>* x_control_qubit_num_logical_list_list[] = {&negative_control_qubit_num_logical_list, &positive_control_qubit_num_logical_list};
     std::vector<int>* x_control_qubit_num_physical_list_list[] = {&negative_control_qubit_num_physical_list, &positive_control_qubit_num_physical_list};
@@ -740,7 +741,7 @@ void check_control_qubit_num_physical() {
             if (x_control_qubit_num_physical >= num_qubits_local) {
                 x_control_qubit_num_physical_global_list_list[control_np]->push_back(x_control_qubit_num_physical);
                 if ((1 & (proc_num >> (x_control_qubit_num_physical - num_qubits_local))) != control_np) {
-                    control_condition = false;
+                    proc_num_control_condition = false;
                 }
             } else {
                 x_control_qubit_num_physical_local_list_list[control_np]->push_back(x_control_qubit_num_physical);
@@ -752,7 +753,7 @@ void check_control_qubit_num_physical() {
 
 void prepare_operating_gate() {
 
-    if (!control_condition) { return; }
+    if (!proc_num_control_condition) { return; }
 
     uint64_t const qkiqn_size = qcs::kernel_input_qnlist_struct::needed_size(
         positive_control_qubit_num_physical_list.size(),
@@ -975,7 +976,7 @@ int measure_qubit(int const measure_qubit_num_logical) {
 
     float2_t measure_norm_host;
 
-    if (control_condition) {
+    if (proc_num_control_condition) {
 
         cubUtility::IndirectLoad loader;
 
@@ -1071,13 +1072,13 @@ void operate_gate(GateType gateobj) {
 
     prepare_control_qubit_num_list();
     // todo: confirm the specification
-    if (!control_condition) return;
+    if (!measured_control_condition) return;
 
     ensure_local_qubits();
     check_control_qubit_num_physical();
     prepare_operating_gate();
 
-    if (control_condition) {
+    if (proc_num_control_condition) {
         ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, cuda_gate<GateType>, num_blocks_gateop, block_size_gateop, 0, stream, gateobj);
     }
 
