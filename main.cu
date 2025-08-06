@@ -380,19 +380,13 @@ void setup() {
     MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_num);
 
-    if (proc_num==0) {
-        fprintf(stderr, "[info] num_procs=%d\n", num_procs);
-    }
-
     if (num_rand_areas_times_num_procs < num_procs) {
         throw std::runtime_error(atlc::format("num_rand_areas_times_num_procs %d < num_procs %d", num_rand_areas_times_num_procs, num_procs));
     }
     num_rand_areas = num_rand_areas_times_num_procs / num_procs;
 
     atlc::group_by_hostname(proc_num, num_procs, my_hostname, my_node_number, my_node_local_rank, node_count);
-    fprintf(stderr,
-            "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n",
-            proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
+    // fprintf(stderr, "[debug] Rank %d on host %s -> assigned node number: %d, local node rank: %d (total nodes: %d)\n", proc_num, my_hostname.c_str(), my_node_number, my_node_local_rank, node_count);
 
     gpu_id = my_node_local_rank;
     ATLC_CHECK_CUDA(cudaSetDevice, gpu_id);
@@ -408,8 +402,6 @@ void setup() {
     log_num_procs = atlc::log2_int(num_procs);
 
     log_block_size_max = 9;
-
-    if (proc_num == 0) { fprintf(stderr, "[info] log_block_size_max=%d\n", log_block_size_max); }
 
     ATLC_CHECK_CUDA(cudaStreamCreate, &stream);
     ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
@@ -551,11 +543,12 @@ void initialize_flat() {
 } /* initialize_flat */
 
 void initialize_zero() {
-
-    ATLC_CHECK_CUDA(cudaMemset, state_data_device, 0, sizeof(qcs::complex_t) * num_states_local);
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
         ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+        ATLC_CHECK_CUDA(cudaMemset, state_data_device + 1, 0, sizeof(qcs::complex_t) * (num_states_local -1));
+    } else {
+        ATLC_CHECK_CUDA(cudaMemset, state_data_device, 0, sizeof(qcs::complex_t) * num_states_local);
     }
 }
 
