@@ -38,6 +38,8 @@
 #include <atlc/check_curand.hpp>
 #include <atlc/check_nccl.hpp>
 
+#include "qcs.hpp"
+
 namespace qcs {
 
 typedef double float_t;
@@ -145,7 +147,7 @@ static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& 
     // ignoring positive control qubits
     uint64_t lower_mask = 0;
     for(int i = 0; i < num_operand_qubits; i++) {
-        uint64_t const mask = (1ULL << (qubit_num_list_sorted[i] - i)) - 1;
+        uint64_t const mask = (UINT64_C(1) << (qubit_num_list_sorted[i] - i)) - 1;
         uint64_t const upper_mask = mask & ~lower_mask;
         lower_mask = mask;
         index_state_0 |= (thread_num & upper_mask) << i;
@@ -156,13 +158,13 @@ static __device__ void thread_num_to_state_index(uint64_t thread_num, uint64_t& 
     // considering positive control qubits
     int const* const positive_control_qubit_num_list = args->get_positive_control_qubit_num_list();
     for(int i = 0; i < args->num_positive_control_qubits; i++) {
-        index_state_0 |= 1ULL << positive_control_qubit_num_list[i];
+        index_state_0 |= UINT64_C(1) << positive_control_qubit_num_list[i];
     }
 
     // generate index_state_1
     // num_target_qubits == 1
     auto const target_qubit_num = args->get_target_qubit_num_list()[0];
-    index_state_1 = index_state_0 | (1ULL << target_qubit_num);
+    index_state_1 = index_state_0 | (UINT64_C(1) << target_qubit_num);
 
     if (args->is_measured_bits & 1) {
         if (args->measured_value_bits & 1) {
@@ -206,13 +208,13 @@ __global__ void clear_alternative_state(int target_qubit_num, int measured_value
 
     // generate index_state_0
     uint64_t lower_mask = 0;
-    uint64_t const mask = (1ULL << (target_qubit_num)) - 1;
+    uint64_t const mask = (UINT64_C(1) << (target_qubit_num)) - 1;
     uint64_t const upper_mask = mask & ~lower_mask;
     lower_mask = mask;
     uint64_t index_state = (thread_num & upper_mask) | ((thread_num & ~lower_mask) << 1);
 
     if (!measured_value) {
-        index_state = index_state | (1ULL << target_qubit_num);
+        index_state = index_state | (UINT64_C(1) << target_qubit_num);
     }
 
     qcs::kernel_common_constant.state_data_device[index_state] = 0.0;
@@ -275,7 +277,7 @@ enum class initstate_enum {
     laod_statevector,
 };
 
-struct simulator {
+struct simulator_core {
 
 /* begin simulator variables */
 
@@ -368,7 +370,9 @@ bool proc_num_control_condition;
 
 /* end simulator variables */
 
-simulator() :
+simulator_core() :
+num_qubits(0),
+qubit_allocated_var(false),
 use_unified_memory(false),
 num_rand_areas_times_num_procs(8)
 {
@@ -415,7 +419,7 @@ void setup() {
 
     if (proc_num==0) {
         std::random_device rng;
-        this->rng_seed = rng(); // & ((1ULL<<12)-1);
+        this->rng_seed = rng(); // & ((UINT64_C(1)<<12)-1);
     }
     ATLC_CHECK_MPI(MPI_Bcast, &this->rng_seed, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
 
@@ -424,9 +428,13 @@ void setup() {
     cub_temp_buffer_device = NULL;
     state_data_device = NULL;
     swap_buffer = NULL;
-    this->num_qubits = 0;
 
 } /* setup */
+
+bool qubit_allocated_var;
+bool is_qubit_allocated() const {
+    return qubit_allocated_var;
+}
 
 void allocate_memory(int num_qubits) {
 
@@ -461,11 +469,11 @@ void allocate_memory(int num_qubits) {
         perm_l2p[qubit_num] = qubit_num;
     }
 
-    num_states = 1ULL << num_qubits;
+    num_states = UINT64_C(1) << num_qubits;
 
     num_qubits_local = num_qubits - log_num_procs;
 
-    num_states_local = 1ULL << num_qubits_local;
+    num_states_local = UINT64_C(1) << num_qubits_local;
 
     if (use_unified_memory) {
         ATLC_CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
@@ -480,13 +488,15 @@ void allocate_memory(int num_qubits) {
     ATLC_CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
 
     log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
-    swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
+    swap_buffer_total_length = UINT64_C(1) << log_swap_buffer_total_length;
     ATLC_CHECK_CUDA(cudaMallocAsync, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t), stream);
 
     ATLC_CHECK_CUDA(cudaMallocAsync, &cub_temp_buffer_device, 1, stream);
     cub_temp_buffer_device_size = 1;
 
     ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
+
+    qubit_allocated_var = true;
 
 }
 
@@ -508,10 +518,12 @@ void free_memory() {
         measure_norm_device = NULL;
     }
     this->num_qubits = 0;
+    qubit_allocated_var = false;
 }
 
 void initialize_sequential() {
-
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
     uint64_t num_blocks_init;
     uint64_t block_size_init;
     if (num_qubits_local >= log_block_size_max) {
@@ -523,11 +535,11 @@ void initialize_sequential() {
     }
 
     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_sequential_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device, proc_num);
-
 } /* initialize_sequential */
 
 void initialize_flat() {
-
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
     uint64_t num_blocks_init;
     uint64_t block_size_init;
     if (num_qubits_local >= log_block_size_max) {
@@ -539,10 +551,11 @@ void initialize_flat() {
     }
 
     ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, qcs::initstate_flat_kernel, num_blocks_init, block_size_init, 0, stream, state_data_device);
-
 } /* initialize_flat */
 
 void initialize_zero() {
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
         ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
@@ -553,6 +566,8 @@ void initialize_zero() {
 }
 
 void initialize_entangled() {
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
         ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
@@ -584,6 +599,8 @@ void initialize_use_curand() {
 } /* initialize_use_curand */
 
 void initialize_laod_statevector() {
+    measured_0_qubit_num_logical_list.clear();
+    measured_1_qubit_num_logical_list.clear();
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -851,9 +868,9 @@ void prepare_operating_gate() {
         }
 
         if (is_measured) {
-            qcs_kernel_input_host->is_measured_bits |= 1ULL << tqi;
+            qcs_kernel_input_host->is_measured_bits |= UINT64_C(1) << tqi;
             if (measured_value /* == 1 */) {
-                qcs_kernel_input_host->measured_value_bits |= 1ULL << tqi;
+                qcs_kernel_input_host->measured_value_bits |= UINT64_C(1) << tqi;
             }
         }
 
@@ -888,11 +905,10 @@ void prepare_operating_gate() {
         num_blocks_gateop = 1;
     } else {
         log_block_size_gateop = log_block_size_max;
-        num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
+        num_blocks_gateop = UINT64_C(1) << (log_num_threads - log_block_size_max);
     }
 
-
-    block_size_gateop = 1ULL << log_block_size_gateop;
+    block_size_gateop = UINT64_C(1) << log_block_size_gateop;
 
 } /* prepare_operating_gate */
 
@@ -1086,7 +1102,7 @@ int measure_qubit(int const measure_qubit_num_logical) {
 
     if (measure_result) { /* 1 */
         measured_1_qubit_num_logical_list.push_back(measure_qubit_num_logical);
-        // measured_bit |= 1ULL << measure_qubit_num_logical;
+        // measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
     } else { /* 0 */
         measured_0_qubit_num_logical_list.push_back(measure_qubit_num_logical);
     }
@@ -1102,10 +1118,10 @@ int measure_qubit(int const measure_qubit_num_logical) {
             num_blocks_gateop = 1;
         } else {
             log_block_size_gateop = log_block_size_max;
-            num_blocks_gateop = 1ULL << (log_num_threads - log_block_size_max);
+            num_blocks_gateop = UINT64_C(1) << (log_num_threads - log_block_size_max);
         }
 
-        block_size_gateop = 1ULL << log_block_size_gateop;
+        block_size_gateop = UINT64_C(1) << log_block_size_gateop;
 
         auto const measure_qubit_num_physical = perm_l2p[measure_qubit_num_logical];
         ATLC_CHECK_CUDA(atlc::cudaLaunchKernel, clear_alternative_state, num_blocks_gateop, block_size_gateop, 0, stream, measure_qubit_num_physical, measure_result);
@@ -1118,8 +1134,9 @@ template<typename GateType>
 void operate_gate(GateType gateobj, std::vector<int>&& target_qubit_num_logical_list_input, std::vector<int>&& negative_control_qubit_num_logical_list_input, std::vector<int>&& positive_control_qubit_num_logical_list_input) {
 
     target_qubit_num_logical_list = std::move(target_qubit_num_logical_list_input);
-    negative_control_qubit_num_logical_list = negative_control_qubit_num_logical_list_input;
-    positive_control_qubit_num_logical_list = positive_control_qubit_num_logical_list_input;
+    // todo: move?
+    negative_control_qubit_num_logical_list = (negative_control_qubit_num_logical_list_input);
+    positive_control_qubit_num_logical_list = (positive_control_qubit_num_logical_list_input);
 
     prepare_control_qubit_num_list();
     if (!measured_control_condition) return;
@@ -1136,6 +1153,7 @@ void operate_gate(GateType gateobj, std::vector<int>&& target_qubit_num_logical_
 
 }
 
+#if 0
 void GHZ_circuit_sample() {
 
     allocate_memory(14);
@@ -1145,7 +1163,7 @@ void GHZ_circuit_sample() {
     for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
         int const measured_value = measure_qubit(measure_qubit_num_logical);
         if (measured_value) {
-            measured_bit |= 1ULL << measure_qubit_num_logical;
+            measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
         }
     }
 
@@ -1153,7 +1171,7 @@ void GHZ_circuit_sample() {
         fprintf(stdout, "%" PRIu64 "\n", measured_bit);
     }
 
-    uint64_t const num_samples = 1ULL << num_qubits;
+    uint64_t const num_samples = UINT64_C(1) << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
@@ -1178,7 +1196,7 @@ void GHZ_circuit_sample() {
         for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
             int const measured_value = measure_qubit(measure_qubit_num_logical);
             if (measured_value) {
-                measured_bit |= 1ULL << measure_qubit_num_logical;
+                measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
             }
         }
 
@@ -1220,7 +1238,7 @@ void measurement_sample() {
     }
 
     uint64_t measured_bit = 0;
-    uint64_t const num_samples = 1ULL << num_qubits;
+    uint64_t const num_samples = UINT64_C(1) << num_qubits;
 
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
@@ -1235,7 +1253,7 @@ void measurement_sample() {
         for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
             int const measured_value = measure_qubit(measure_qubit_num_logical);
             if (measured_value) {
-                measured_bit |= 1ULL << measure_qubit_num_logical;
+                measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
             }
         }
 
@@ -1264,26 +1282,191 @@ int main() {
     if (flag_save_statevector) { save_statevector(); }
     if (flag_calculate_checksum) { calculate_checksum(); }
 
-    MPI_Finalize();
-
     return 0;
 
 }; /* main */
-
+#endif
 
 void dispose() {
     free_memory();
     ATLC_CHECK_CUDA(cudaEventDestroy, event_1);
     ATLC_CHECK_CUDA(cudaEventDestroy, event_2);
     ATLC_CHECK_CUDA(cudaStreamDestroy, stream);
+    MPI_Finalize();
 };
 
-}; /* simulator */
+}; /* simulator_core */
+
+simulator::simulator() {
+    num_qubits = 0;
+    core = NULL;
+}
+
+void simulator::setup() {
+    core = new simulator_core();
+    core->setup();
+}
+
+void simulator::promise_qubits(int num_qubits) {
+    this->num_qubits = num_qubits;
+}
+
+void simulator::dispose() {
+    core->dispose();
+    delete this->core;
+}
+
+int simulator::get_proc_num() {
+    return core->proc_num;
+}
+
+int simulator::get_num_procs() {
+    return core->num_procs;
+}
+
+int simulator::measure(int qubit_num) {
+    ensure_qubits_allocated();
+    return core->measure_qubit(qubit_num);
+}
+
+void simulator::ensure_qubits_allocated() {
+    if (!core->is_qubit_allocated()) {
+        core->allocate_memory(num_qubits);
+    }
+}
+
+void simulator::reset() {
+    set_zero_state();
+}
+
+void simulator::set_zero_state() {
+    ensure_qubits_allocated();
+    core->initialize_zero();
+}
+
+void simulator::set_sequential_state() {
+    ensure_qubits_allocated();
+    core->initialize_sequential();
+}
+
+void simulator::set_flat_state() {
+    ensure_qubits_allocated();
+    core->initialize_flat();
+}
+
+void simulator::set_entangled_state() {
+    ensure_qubits_allocated();
+    core->initialize_entangled();
+}
+
+void simulator::set_random_state() {
+    ensure_qubits_allocated();
+    core->initialize_use_curand();
+}
+
+void simulator::hadamard(int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list) {
+    ensure_qubits_allocated();
+    core->operate_gate(gate::hadamard(), {target_qubit_num}, std::move(negctrl_qubit_num_list), std::move(ctrl_qubit_num_list));
+}
+
+void simulator::gate_x(int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list) {
+    ensure_qubits_allocated();
+    core->operate_gate(gate::x(), {target_qubit_num}, std::move(negctrl_qubit_num_list), std::move(ctrl_qubit_num_list));
+}
 
 } /* qcs */
 
+void ghz_sample() {
+    qcs::simulator sim;
+    sim.setup();
+    ATLC_DEFER_FUNC(sim.dispose);
+
+    unsigned int num_qubits = 14;
+    sim.promise_qubits(num_qubits);
+
+    uint64_t measured_bit = 0;
+
+    for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+        int const measured_value = sim.measure(measure_qubit_num_logical);
+        if (measured_value) {
+            measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
+        }
+    }
+
+    if (sim.get_proc_num() == 0) {
+        fprintf(stdout, "%" PRIu64 "\n", measured_bit);
+    }
+
+    uint64_t const num_samples = UINT64_C(1) << num_qubits;
+
+    for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
+
+        /* begin gate operation */
+        sim.hadamard(0, {}, {});
+
+        for(int target_qubit_num_logical = 1; target_qubit_num_logical < num_qubits; target_qubit_num_logical++)
+        {
+            if ((measured_bit>>target_qubit_num_logical)&1) {
+                sim.gate_x(target_qubit_num_logical, {0}, {});
+            } else {
+                sim.gate_x(target_qubit_num_logical, {}, {0});
+            }
+
+        } /* target_qubit_num_logical loop */
+
+        /* end gate operation */
+
+        /* begin measurement */
+        measured_bit = 0;
+
+        for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+            int const measured_value = sim.measure(measure_qubit_num_logical);
+            if (measured_value) {
+                measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
+            }
+        }
+
+        if (sim.get_proc_num() == 0) {
+            fprintf(stdout, "%" PRIu64 "\n", measured_bit);
+        }
+        /* end measurement */
+
+    }
+} /* ghz_sample */
+
+void measurement_sample() {
+    qcs::simulator sim;
+    sim.setup();
+    ATLC_DEFER_FUNC(sim.dispose);
+
+    unsigned int num_qubits = 14;
+    sim.promise_qubits(num_qubits);
+
+    uint64_t const num_samples = UINT64_C(1) << num_qubits;
+
+    for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
+
+        sim.set_flat_state();
+
+        uint64_t measured_bit = 0;
+
+        for (int measure_qubit_num_logical = 0; measure_qubit_num_logical < num_qubits; measure_qubit_num_logical++) {
+            int const measured_value = sim.measure(measure_qubit_num_logical);
+            if (measured_value) {
+                measured_bit |= UINT64_C(1) << measure_qubit_num_logical;
+            }
+        }
+
+        if (sim.get_proc_num() == 0) {
+            fprintf(stdout, "%" PRIu64 "\n", measured_bit);
+        }
+        /* end measurement */
+
+    }
+}
+
 int main(int argc, char** argv) {
-    setvbuf(stdout, NULL, _IOLBF, 1024 * 512);
-    qcs::simulator simulator;
-    return simulator.main();
+    // measurement_sample();
+    ghz_sample();
+    return 0;
 }
