@@ -19,7 +19,9 @@ namespace qcs {
         int get_num_procs();
         int get_proc_num();
 
-        void promise_qubits(int num_qubits);
+        inline void promise_qubits(int num_qubits) {
+            this->num_qubits += num_qubits;
+        }
 
         inline void alloc_clbits(int num_clbits) {
             clbits.resize(clbits.size() + num_clbits);

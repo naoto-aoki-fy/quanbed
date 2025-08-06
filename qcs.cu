@@ -1308,10 +1308,6 @@ void simulator::setup() {
     core->setup();
 }
 
-void simulator::promise_qubits(int num_qubits) {
-    this->num_qubits += num_qubits;
-}
-
 void simulator::dispose() {
     core->dispose();
     delete this->core;
