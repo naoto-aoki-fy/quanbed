@@ -10,7 +10,6 @@ namespace qcs {
         simulator_core* core;
         int num_qubits;
         void ensure_qubits_allocated();
-        std::vector<uint8_t> clbits;
     public:
         simulator();
         void setup();
@@ -23,17 +22,7 @@ namespace qcs {
             this->num_qubits += num_qubits;
         }
 
-        inline void alloc_clbits(int num_clbits) {
-            clbits.resize(clbits.size() + num_clbits);
-        }
-        inline uint8_t clbits_get(std::size_t idx) {
-            return clbits[idx];
-        }
-        inline uint8_t clbits_set(std::size_t idx, uint8_t value) {
-            return (clbits[idx] = value);
-        }
-
-        void reset();
+        void reset(int qubit_num);
         void set_zero_state();
         void set_sequential_state();
         void set_flat_state();

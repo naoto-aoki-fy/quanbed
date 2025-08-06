@@ -1332,8 +1332,11 @@ void simulator::ensure_qubits_allocated() {
     }
 }
 
-void simulator::reset() {
-    set_zero_state();
+void simulator::reset(int qubit_num) {
+    int measured_value = measure(qubit_num);
+    if (measured_value) {
+        gate_x(qubit_num, {}, {});
+    }
 }
 
 void simulator::set_zero_state() {
@@ -1379,37 +1382,32 @@ void ghz_sample() {
     ATLC_DEFER_FUNC(sim.dispose);
 
     constexpr unsigned int num_qubits = 14;
-    constexpr unsigned int num_clbits = num_qubits;
     sim.promise_qubits(num_qubits);
-    sim.alloc_clbits(num_clbits);
 
     uint64_t const num_samples = UINT64_C(1) << num_qubits;
 
+    uint64_t measured_bit = 0;
     for(int sample_num = 0; sample_num < num_samples; ++sample_num) {
 
         sim.hadamard(0, {}, {});
 
         for(int qubit_num = 1; qubit_num < num_qubits; qubit_num++)
         {
-            if (sim.clbits_get(qubit_num)) {
+            if ((measured_bit>>qubit_num)&1) {
                 sim.gate_x(qubit_num, {0}, {});
             } else {
                 sim.gate_x(qubit_num, {}, {0});
             }
         }
 
+        measured_bit = 0;
         for (int qubit_num = 0; qubit_num < num_qubits; qubit_num++) {
-            sim.clbits_set(qubit_num, sim.measure(qubit_num));
+            if (sim.measure(qubit_num)) {
+                measured_bit |= UINT64_C(1) << qubit_num;
+            }
         }
 
         if (sim.get_proc_num() == 0) {
-            uint64_t measured_bit = 0;
-            for (int qubit_num = 0; qubit_num < num_qubits; qubit_num++) {
-                uint8_t const measured_value = sim.clbits_get(qubit_num);
-                if (measured_value) {
-                    measured_bit |= UINT64_C(1) << qubit_num;
-                }
-            }
             fprintf(stdout, "%" PRIu64 "\n", measured_bit);
         }
 
@@ -1422,9 +1420,7 @@ void measurement_sample() {
     ATLC_DEFER_FUNC(sim.dispose);
 
     constexpr unsigned int num_qubits = 14;
-    constexpr unsigned int num_clbits = num_qubits;
     sim.promise_qubits(num_qubits);
-    sim.alloc_clbits(num_clbits);
 
     uint64_t const num_samples = UINT64_C(1) << num_qubits;
 
@@ -1432,18 +1428,14 @@ void measurement_sample() {
 
         sim.set_flat_state();
 
+        uint64_t measured_bit = 0;
         for (int qubit_num = 0; qubit_num < num_qubits; qubit_num++) {
-            sim.clbits_set(qubit_num, sim.measure(qubit_num));
+            if (sim.measure(qubit_num)) {
+                measured_bit |= UINT64_C(1) << qubit_num;
+            }
         }
 
         if (sim.get_proc_num() == 0) {
-            uint64_t measured_bit = 0;
-            for (int qubit_num = 0; qubit_num < num_qubits; qubit_num++) {
-                uint8_t const measured_value = sim.clbits_get(qubit_num);
-                if (measured_value) {
-                    measured_bit |= UINT64_C(1) << qubit_num;
-                }
-            }
             fprintf(stdout, "%" PRIu64 "\n", measured_bit);
         }
 
