@@ -306,8 +306,8 @@ std::vector<int> perm_p2l;
 std::vector<int> perm_l2p;
 
 int num_samples;
-int rng_seed;
-std::mt19937 engine;
+unsigned int rng_seed;
+std::mt19937_64 engine;
 int num_rand_areas_times_num_procs;
 
 int log_num_procs;
@@ -369,10 +369,10 @@ bool proc_num_control_condition;
 /* end simulator variables */
 
 simulator() :
-rng_seed(123456),
 use_unified_memory(false),
 num_rand_areas_times_num_procs(8)
-{}
+{
+}
 
 void setup() {
 
@@ -405,17 +405,6 @@ void setup() {
     nccl_rank = proc_num;
     ATLC_CHECK_NCCL(ncclCommInitRank, &nccl_comm, num_procs, nccl_id, nccl_rank);
 
-    num_qubits = 14;
-    if (proc_num == 0) { fprintf(stderr, "[info] num_qubits=%d\n", num_qubits); }
-
-    perm_p2l.resize(num_qubits);
-    perm_l2p.resize(num_qubits);
-
-    for(int qubit_num=0; qubit_num<num_qubits; qubit_num++) {
-        perm_p2l[qubit_num] = qubit_num;
-        perm_l2p[qubit_num] = qubit_num;
-    }
-
     log_num_procs = atlc::log2_int(num_procs);
 
     log_block_size_max = 9;
@@ -426,14 +415,65 @@ void setup() {
     ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_1, cudaEventDefault);
     ATLC_CHECK_CUDA(cudaEventCreateWithFlags, &event_2, cudaEventDefault);
 
+    block_size_max = 1 << log_block_size_max;
+
+    ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
+
+    ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
+
+    if (proc_num==0) {
+        std::random_device rng;
+        this->rng_seed = rng(); // & ((1ULL<<12)-1);
+    }
+    ATLC_CHECK_MPI(MPI_Bcast, &this->rng_seed, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+    engine = std::mt19937_64(rng_seed);
+
+    cub_temp_buffer_device = NULL;
+    state_data_device = NULL;
+    swap_buffer = NULL;
+    this->num_qubits = 0;
+
+} /* setup */
+
+void allocate_memory(int num_qubits) {
+
+    std::vector<std::string> exmes_list;
+    if (this->num_qubits > 0) {
+        exmes_list.push_back(atlc::format("num_qubits is already set %d > 0", this->num_qubits));
+    }
+    if (cub_temp_buffer_device) {
+        exmes_list.push_back(atlc::format("cub_temp_buffer_device is %p not NULL", cub_temp_buffer_device));
+    }
+    if (state_data_device) {
+        exmes_list.push_back(atlc::format("state_data_device is %p not NULL", state_data_device));
+    }
+    if (swap_buffer) {
+        exmes_list.push_back(atlc::format("swap_buffer is %p not NULL", swap_buffer));
+    }
+    if (exmes_list.size()>0) {
+        std::string exmes_all = std::move(exmes_list[0]);
+        for (int i = 1; i < exmes_list.size(); i++) {
+            exmes_all += "\n" + exmes_list[i];
+        }
+        throw std::runtime_error(exmes_all);
+    }
+
+    this->num_qubits = num_qubits;
+
+    perm_p2l.resize(num_qubits);
+    perm_l2p.resize(num_qubits);
+
+    for(int qubit_num=0; qubit_num<num_qubits; qubit_num++) {
+        perm_p2l[qubit_num] = qubit_num;
+        perm_l2p[qubit_num] = qubit_num;
+    }
+
     num_states = 1ULL << num_qubits;
 
     num_qubits_local = num_qubits - log_num_procs;
 
     num_states_local = 1ULL << num_qubits_local;
-    block_size_max = 1 << log_block_size_max;
-
-    if (proc_num == 0) { fprintf(stderr, "[info] malloc device memory\n"); }
 
     if (use_unified_memory) {
         ATLC_CHECK_CUDA(cudaMallocManaged, &state_data_device, num_states_local * sizeof(*state_data_device));
@@ -441,30 +481,42 @@ void setup() {
     } else {
         ATLC_CHECK_CUDA(cudaMallocAsync, &state_data_device, num_states_local * sizeof(*state_data_device), stream);
     }
-
-    ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_common_constant_addr, qcs::kernel_common_constant);
+    initialize_zero();
 
     qcs_kernel_common_host.num_qubits = num_qubits;
     qcs_kernel_common_host.state_data_device = state_data_device;
     ATLC_CHECK_CUDA(cudaMemcpyAsync, qcs_kernel_common_constant_addr, &qcs_kernel_common_host, sizeof(qcs::kernel_common_struct), cudaMemcpyHostToDevice, stream);
 
-    ATLC_CHECK_CUDA(cudaGetSymbolAddress, (void**)&qcs_kernel_input_constant_addr, qcs::kernel_input_constant);
-
     log_swap_buffer_total_length = (num_qubits_local>30)? num_qubits_local - 3 : num_qubits_local;
     swap_buffer_total_length = 1ULL << log_swap_buffer_total_length;
     ATLC_CHECK_CUDA(cudaMallocAsync, &swap_buffer, swap_buffer_total_length * sizeof(qcs::complex_t), stream);
 
-    ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
-
     ATLC_CHECK_CUDA(cudaMallocAsync, &cub_temp_buffer_device, 1, stream);
     cub_temp_buffer_device_size = 1;
 
-    engine = std::mt19937(rng_seed + 1);
-    measured_0_qubit_num_logical_list.clear();
-    measured_1_qubit_num_logical_list.clear();
+    ATLC_CHECK_CUDA(cudaMallocAsync, &measure_norm_device, sizeof(qcs::complex_t), stream);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-} /* setup */
+}
+
+void free_memory() {
+    if (cub_temp_buffer_device) {
+        ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
+        cub_temp_buffer_device = NULL;
+    }
+    if (state_data_device) {
+        ATLC_CHECK_CUDA(cudaFreeAsync, state_data_device, stream);
+        state_data_device = NULL;
+    }
+    if (swap_buffer) {
+        ATLC_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
+        swap_buffer = NULL;
+    }
+    if (measure_norm_device) {
+        ATLC_CHECK_CUDA(cudaFreeAsync, measure_norm_device, stream);
+        measure_norm_device = NULL;
+    }
+    this->num_qubits = 0;
+}
 
 void initialize_sequential() {
 
@@ -499,9 +551,15 @@ void initialize_flat() {
 } /* initialize_flat */
 
 void initialize_zero() {
+
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
         ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+        qcs::complex_t const zero = 0;
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device + 1, &zero, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
+    } else {
+        qcs::complex_t const zero = 0;
+        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &zero, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
     }
 }
 
@@ -1091,8 +1149,7 @@ void operate_gate(GateType gateobj, std::vector<int>&& target_qubit_num_logical_
 
 void GHZ_circuit_sample() {
 
-    // initialize_zero();
-    initialize_flat();
+    allocate_memory(14);
 
     uint64_t measured_bit = 0;
 
@@ -1146,6 +1203,8 @@ void GHZ_circuit_sample() {
 }; /* GHZ_circuit_sample */
 
 void measurement_sample() {
+
+    allocate_memory(14);
 
     constexpr initstate_enum initstate_choice = initstate_enum::flat;
     switch (initstate_choice) {
@@ -1202,11 +1261,15 @@ void measurement_sample() {
 
 int main() {
 
+
+
     constexpr bool flag_calculate_checksum = false;
     constexpr bool flag_save_statevector = false;
 
     setup();
     ATLC_DEFER_FUNC(dispose);
+
+    ATLC_DEFER_FUNC(free_memory);
 
     // measurement_sample();
     GHZ_circuit_sample();
@@ -1222,9 +1285,7 @@ int main() {
 
 
 void dispose() {
-    ATLC_CHECK_CUDA(cudaFreeAsync, cub_temp_buffer_device, stream);
-    ATLC_CHECK_CUDA(cudaFreeAsync, state_data_device, stream);
-    ATLC_CHECK_CUDA(cudaFreeAsync, swap_buffer, stream);
+    free_memory();
     ATLC_CHECK_CUDA(cudaEventDestroy, event_1);
     ATLC_CHECK_CUDA(cudaEventDestroy, event_2);
     ATLC_CHECK_CUDA(cudaStreamDestroy, stream);
