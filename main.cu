@@ -552,14 +552,10 @@ void initialize_flat() {
 
 void initialize_zero() {
 
+    ATLC_CHECK_CUDA(cudaMemset, state_data_device, 0, sizeof(qcs::complex_t) * num_states_local);
     if (proc_num == 0) {
         qcs::complex_t const one = 1;
         ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &one, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
-        qcs::complex_t const zero = 0;
-        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device + 1, &zero, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
-    } else {
-        qcs::complex_t const zero = 0;
-        ATLC_CHECK_CUDA(cudaMemcpyAsync, state_data_device, &zero, sizeof(qcs::complex_t), cudaMemcpyHostToDevice, stream);
     }
 }
 
@@ -1260,8 +1256,6 @@ void measurement_sample() {
 } /* measurement_sample */
 
 int main() {
-
-
 
     constexpr bool flag_calculate_checksum = false;
     constexpr bool flag_save_statevector = false;
