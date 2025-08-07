@@ -1393,7 +1393,7 @@ void simulator::gate_u4_pow(double theta, double phi, double lambda, double gamm
 
 } /* qcs */
 
-#if 0
+#ifdef QCS_BUILD_STANDALONE
 void ghz_sample() {
     qcs::simulator sim;
     sim.setup();
