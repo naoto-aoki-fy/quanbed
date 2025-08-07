@@ -1,1 +1,3 @@
-# GPU simple hadamard
+# Quanbed
+
+A Testbed for Quantum computer simulator
