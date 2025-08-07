@@ -1321,6 +1321,10 @@ int simulator::get_num_procs() {
     return core->num_procs;
 }
 
+void simulator::promise_qubits(int num_qubits) {
+    this->num_qubits += num_qubits;
+}
+
 int simulator::measure(int qubit_num) {
     ensure_qubits_allocated();
     return core->measure_qubit(qubit_num);
@@ -1369,13 +1373,27 @@ void simulator::hadamard(int target_qubit_num, std::vector<int>&& negctrl_qubit_
     core->operate_gate(gate::hadamard(), {target_qubit_num}, std::move(negctrl_qubit_num_list), std::move(ctrl_qubit_num_list));
 }
 
+void simulator::hadamard_pow(double exponent, int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list) {
+    throw std::runtime_error("not implemented");
+}
+
 void simulator::gate_x(int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list) {
     ensure_qubits_allocated();
     core->operate_gate(gate::x(), {target_qubit_num}, std::move(negctrl_qubit_num_list), std::move(ctrl_qubit_num_list));
 }
 
+void simulator::gate_x_pow(double exponent, int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list) {
+    throw std::runtime_error("not implemented");
+}
+
+
+void simulator::gate_u4(double theta, double phi, double lambda, double gamma, int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list)  { throw std::runtime_error("not implemented"); }
+
+void simulator::gate_u4_pow(double theta, double phi, double lambda, double gamma, double exponent, int target_qubit_num, std::vector<int>&& negctrl_qubit_num_list, std::vector<int>&& ctrl_qubit_num_list)  { throw std::runtime_error("not implemented"); }
+
 } /* qcs */
 
+#if 0
 void ghz_sample() {
     qcs::simulator sim;
     sim.setup();
@@ -1447,3 +1465,4 @@ int main(int argc, char** argv) {
     ghz_sample();
     return 0;
 }
+#endif
