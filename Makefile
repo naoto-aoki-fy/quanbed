@@ -10,9 +10,7 @@ qcs: qcs.cu qcs.hpp
 	$(NVCC) -DQCS_BUILD_STANDALONE $(NVCCFLAGS) $< -o $@
 
 lib/libqcs.so: qcs.cu qcs.hpp
-	mkdir -p lib
 	$(NVCC) -Xcompiler -fPIC -shared $(NVCCFLAGS) $< -o $@
-
 
 .PHONY: run
 run: qcs
